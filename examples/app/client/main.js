@@ -34,6 +34,76 @@ createApp({
     },
 
     /**
+     * Parses task directives from the text and adds them to the assistant message's activeTasks array.
+     * Task directives are in the format ```Task\n{...JSON...}\n```
+     * @param {string} text The text to parse
+     * @param {object} assistantMsg The assistant message object to update
+     * @returns {string} The text with task directives removed
+     */
+    parseTaskDirectives(text, assistantMsg) {
+      if (!text) return text;
+      if (!assistantMsg.activeTasks) {
+        assistantMsg.activeTasks = [];
+      }
+
+      // Regular expression to match ```Task\n{...}\n``` blocks
+      // This regex matches backticks, 'Task', optional whitespace, JSON, and closing backticks
+      const taskPattern = /```Task\s*\n([\s\S]*?)\n```/g;
+      
+      // Replace the pattern and collect the tasks
+      let modifiedText = text.replace(taskPattern, (match, jsonContent) => {
+        try {
+          const taskData = JSON.parse(jsonContent.trim());
+          
+          // Check if this task already exists (avoid duplicates during streaming)
+          const existingTaskIndex = assistantMsg.activeTasks.findIndex(t => t.id === taskData.id);
+          
+          if (existingTaskIndex >= 0) {
+            // Task already exists, we might want to update it, but for now just skip
+            return ''; // Remove from the text
+          }
+          
+          // Add a new task with status "pending"
+          const newTask = {
+            ...taskData,
+            status: 'pending',
+            timestamp: Date.now()
+          };
+          
+          assistantMsg.activeTasks.push(newTask);
+          
+          // Return empty string to remove the ```Task...``` block from the displayed message
+          return '';
+        } catch (e) {
+          console.error('Error parsing task JSON:', e, jsonContent);
+          // If we can't parse it, leave it in the text
+          return match;
+        }
+      });
+      
+      return modifiedText;
+    },
+
+    /**
+     * Updates a task in the assistant message's activeTasks array.
+     * @param {string} taskId The ID of the task to update
+     * @param {object} updates The updates to apply to the task
+     * @returns {boolean} True if the task was found and updated, false otherwise
+     */
+    updateTask(taskId, updates) {
+      for (const msg of this.messages) {
+        if (msg.activeTasks) {
+          const taskIndex = msg.activeTasks.findIndex(t => t.id === taskId);
+          if (taskIndex >= 0) {
+            msg.activeTasks[taskIndex] = { ...msg.activeTasks[taskIndex], ...updates };
+            return true;
+          }
+        }
+      }
+      return false;
+    },
+
+    /**
      * Sends the user's message to the backend and sets up an EventSource to receive streamed responses.
      * It handles the SSE connection and processes incoming agent events.
      */
@@ -87,6 +157,7 @@ createApp({
             text: '', // Will be populated by llmResponse or agentEnd
             uiComponents: [],
             tasks: [],
+            activeTasks: [], // Initialize activeTasks array
             isThinkingPlaceholder: true, // Special flag for the initial thinking bubble
         });
         this.scrollToBottom();
@@ -172,6 +243,8 @@ createApp({
             text: '',
             uiComponents: [],
             tasks: [],
+            activeTasks: [], // Initialize activeTasks array
+            isThinkingPlaceholder: true, // Special flag for the initial thinking bubble
         };
         this.messages.push(assistantMsg);
       }
@@ -183,18 +256,28 @@ createApp({
       switch (event.type) {
         case 'llmResponse':
           // Append or set text from LLM
-          assistantMsg.text = (assistantMsg.text || '') + event.data.rawText; 
+          const rawText = event.data.rawText || '';
+          
+          // First parse task directives from the text and update activeTasks
+          const parsedText = this.parseTaskDirectives(rawText, assistantMsg);
+          
+          // Si le texte parsé est vide (uniquement des tâches) et qu'il n'y a pas encore de texte
+          if (!parsedText.trim() && !assistantMsg.text) {
+            // On ajoute un message par défaut
+            assistantMsg.text = "Je vais traiter votre demande...";
+          } else {
+            // Sinon on ajoute le texte parsé
+            assistantMsg.text = (assistantMsg.text || '') + parsedText;
+          }
           break;
         case 'parsedDirectives':
           // Store task and UI directives information if needed, or handle them if they are separate from final text
           // For now, we'll mainly rely on 'uiDirective' and 'taskResult' for display
-          // event.data.tasks, event.data.ui
           if (event.data.ui && event.data.ui.length > 0) {
             event.data.ui.forEach(uiDesc => {
                 assistantMsg.uiComponents.push(uiDesc);
             });
           }
-          // We could show tasks as they are parsed, but 'taskStart' and 'taskResult' are more informative for progress
           break;
         case 'thinkingDirective':
             this.messages.push({ sender: 'assistant', text: `Thinking about: ${event.data.message || '...'}`, type: 'thinking' });
@@ -204,38 +287,71 @@ createApp({
           assistantMsg.uiComponents.push(event.data.uiDescriptor);
           break;
         case 'taskStart':
-            this.messages.push({ 
-                sender: 'assistant', 
-                taskInfo: { id: event.data.task.id, kind: event.data.task.kind, status: 'started' }, 
-                text: `Starting task: ${event.data.task.id} (${event.data.task.kind})`
+          // Update task status if it was created via a ```Task``` block
+          if (this.updateTask(event.data.task.id, { 
+            status: 'in_progress',
+            startTime: Date.now()
+          })) {
+            console.log(`Updated task status for ${event.data.task.id} to in_progress`);
+          } else {
+            // If the task wasn't found (it might have been created directly by the agent, not via ```Task``` block),
+            // create a new task entry in the current message
+            if (!assistantMsg.activeTasks) {
+              assistantMsg.activeTasks = [];
+            }
+            
+            assistantMsg.activeTasks.push({
+              id: event.data.task.id,
+              kind: event.data.task.kind,
+              params: event.data.task.params,
+              status: 'in_progress',
+              startTime: Date.now()
             });
+          }
           break;
         case 'taskResult':
-          // Find the message announcing the task start and update it, or add a new one
-          const taskStartMsg = this.messages.find(m => m.taskInfo && m.taskInfo.id === event.data.id && m.taskInfo.status === 'started');
-          if (taskStartMsg) {
-            taskStartMsg.taskInfo.status = event.data.status;
-            taskStartMsg.taskInfo.output = event.data.output;
-            taskStartMsg.taskInfo.error = event.data.error;
-            taskStartMsg.text = `Task ${event.data.id} (${event.data.status}): ${event.data.output ? 'Completed' : ('Failed: ' + event.data.error)}`;
-          } else {
-            this.messages.push({ 
-                sender: 'assistant', 
-                taskInfo: { id: event.data.id, status: event.data.status, output: event.data.output, error: event.data.error, kind: 'N/A' /* kind might not be in TaskResult */ },
-                text: `Task Result for ${event.data.id}: ${event.data.status}`
-            });
+          // Update the task with the result
+          const status = event.data.status === 'success' ? 'completed' : 'failed';
+          const taskUpdated = this.updateTask(event.data.id, {
+            status,
+            output: event.data.output,
+            error: event.data.error,
+            endTime: Date.now()
+          });
+
+          // Si la tâche est terminée et qu'on n'avait qu'un message par défaut
+          if (taskUpdated && status === 'completed' && assistantMsg.text === "Je vais traiter votre demande...") {
+            // On remplace le message par défaut par le résultat
+            if (event.data.output) {
+              try {
+                const weatherData = JSON.parse(event.data.output);
+                assistantMsg.text = `Voici la météo que j'ai trouvée :\n` +
+                  `Température : ${weatherData.temperature}\n` +
+                  `Vent : ${weatherData.wind}\n` +
+                  `Description : ${weatherData.description}\n\n` +
+                  `Prévisions pour les prochains jours :\n` +
+                  weatherData.forecast.map(day => 
+                    `Jour ${day.day} : ${day.temperature}, Vent : ${day.wind}`
+                  ).join('\n');
+              } catch (e) {
+                // Si ce n'est pas du JSON ou pas le format attendu, on affiche tel quel
+                assistantMsg.text = `Voici le résultat : ${event.data.output}`;
+              }
+            }
           }
           break;
         case 'agentEnd':
-          // The final consolidated text from the agent for this interaction
+          // Parse task directives from the final text as well
           if (event.data.finalText) {
-            assistantMsg.text = event.data.finalText; // Overwrite with final, clean text
+            const parsedFinalText = this.parseTaskDirectives(event.data.finalText, assistantMsg);
+            assistantMsg.text = parsedFinalText; // Overwrite with final, clean text
           }
-          // Display final UI components if any (though uiDirective should have handled them)
+          
+          // Display final UI components if any
           if (event.data.finalUi && event.data.finalUi.length > 0) {
             assistantMsg.uiComponents = event.data.finalUi; // Replace with final UI set
           }
-          // All tasks and their results are in event.data.history
+          
           this.isLoading = false; // Mark loading as complete for this specific message
           break;
         case 'error': // Custom error event from server.js or agent framework itself

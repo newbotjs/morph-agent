@@ -100,7 +100,6 @@ app.use(express.static('client'));
 const WEATHER_SYSTEM_PROMPT = `
 You are a friendly weather assistant.
 Your goal is to provide weather information for a requested city.
-When a user asks for the weather, you MUST use the 'callApi' capability to fetch data.
 
 Use the following format for your response:
 

@@ -6,5 +6,4 @@
  */
 
 export * from './call-api';
-export * from './delay';
 export * from './compute'; 

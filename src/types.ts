@@ -124,8 +124,36 @@ export interface UiDirectiveEventData {
   uiDescriptor: UiDescriptor;
 }
 
+// ----- History Entry Types -----
+export type HistoryRole = 'user' | 'assistant' | 'tool';
+
+export interface BaseHistoryEntry {
+  role: HistoryRole;
+  timestamp?: number; // Optional: for ordering or debugging
+}
+
+export interface UserHistoryEntry extends BaseHistoryEntry {
+  role: 'user';
+  content: string;
+}
+
+export interface AssistantHistoryEntry extends BaseHistoryEntry {
+  role: 'assistant';
+  content: string; // Raw LLM response, may contain directives
+}
+
+export interface ToolHistoryEntry extends BaseHistoryEntry {
+  role: 'tool';
+  id: string; // Corresponds to Task id
+  status: 'ok' | 'error';
+  output?: Json; // Output of the tool if status is 'ok'
+  error?: string;  // Error message if status is 'error'
+}
+
+export type HistoryEntry = UserHistoryEntry | AssistantHistoryEntry | ToolHistoryEntry;
+
 export interface AgentEndEventData {
-  history: TaskResult[];
+  history: HistoryEntry[]; // Updated to use HistoryEntry[]
   finalText: string; // The last raw text response from the LLM for this turn
   finalUi: UiDescriptor[]; // All UI descriptors accumulated during this turn
 }

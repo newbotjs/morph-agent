@@ -1,4 +1,4 @@
-import { AgentOptions, TaskResult, UiDescriptor, AgentEvent, AgentEndEventData, LLMResponseEventData, ParsedDirectivesEventData, TaskStartEventData, UiDirectiveEventData, ThinkingDirectiveEventData, ThinkingDirective } from './types';
+import { AgentOptions, TaskResult, UiDescriptor, AgentEvent, AgentEndEventData, LLMResponseEventData, ParsedDirectivesEventData, TaskStartEventData, UiDirectiveEventData, ThinkingDirectiveEventData, ThinkingDirective, HistoryEntry, UserHistoryEntry, AssistantHistoryEntry, ToolHistoryEntry } from './types';
 import { parseDirectives } from './parser';
 import { TaskQueue } from './task-queue';
 import { Executor } from './executor';
@@ -10,7 +10,7 @@ import { Executor } from './executor';
  * manages UI rendering, and handles the iterative refinement process.
  */
 export class Agent {
-  private history: TaskResult[] = [];
+  private history: HistoryEntry[] = [];
   private executor: Executor;
   private onEvent?: (event: AgentEvent) => void;
   
@@ -23,7 +23,7 @@ export class Agent {
     this.executor = new Executor(opts.capabilities, {
       fetch: globalThis.fetch,
       wait: (ms: number) => new Promise(resolve => setTimeout(resolve, ms)),
-      ...(opts.runtimeEnv || {}), // Allow overriding default fetch/wait and adding custom env properties
+      ...(opts.runtimeEnv || {}),
     });
     this.onEvent = opts.onEvent;
   }
@@ -38,23 +38,25 @@ export class Agent {
    * Process a user message through a complete RAO cycle
    * 
    * @param userMsg - The user's message input
-   * @returns An object containing the text response (with original directives), UI components, and task history
+   * @returns An object containing the final history, text response, and UI components
    * @example
    * ```ts
    * const agent = new Agent({ llm: openAI, capabilities: [...strategies] });
    * const response = await agent.chat("Show me flight options to Paris ::Task{...}");
-   * console.log(response.text);  // The LLM's reply text, including ::Task{} directives
-   * // response.ui contains UI components to render
+   * console.log(response.finalText);  // The LLM's reply text, including ::Task{} directives
+   * // response.finalUi contains UI components to render
+   * // response.history contains the full interaction log
    * ```
    */
   async chat(userMsg: string): Promise<AgentEndEventData> {
-    this.history = [];
+    this.history = [{ role: 'user', content: userMsg, timestamp: Date.now() } as UserHistoryEntry];
     let currentTextResponse = "";
     let accumulatedUi: UiDescriptor[] = [];
     
-    const initialPrompt = this.buildPrompt(userMsg);
+    const initialPrompt = this.buildPrompt();
     let llmResponse = await this.opts.llm.generate(initialPrompt);
     currentTextResponse = llmResponse;
+    this.history.push({ role: 'assistant', content: llmResponse, timestamp: Date.now() } as AssistantHistoryEntry);
     this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
     
     let parsed = parseDirectives(llmResponse);
@@ -70,12 +72,10 @@ export class Agent {
       accumulatedUi.push(desc); 
     });
     
-    // Handle thinking directive if present
     if (parsed.thinkingDirective) {
-      await this.processThinkingDirective(parsed.thinkingDirective, userMsg, accumulatedUi);
+      await this.processThinkingDirective(parsed.thinkingDirective, accumulatedUi);
     } else {
-      // Standard task processing flow
-      await this.processRegularTasks(parsed.tasks, userMsg, accumulatedUi);
+      await this.processRegularTasks(parsed.tasks, accumulatedUi);
     }
 
     if (this.opts.uiAdapter) {
@@ -95,40 +95,42 @@ export class Agent {
    * Process tasks from a Thinking directive sequentially
    * 
    * @param thinkingDirective - The thinking directive to process
-   * @param userMsg - The original user message
    * @param accumulatedUi - UI components accumulated during processing
    * @private
    */
   private async processThinkingDirective(
     thinkingDirective: ThinkingDirective,
-    userMsg: string,
     accumulatedUi: UiDescriptor[]
   ): Promise<void> {
     this.emitEvent('thinkingDirective', { directive: thinkingDirective } as ThinkingDirectiveEventData);
     
     let currentThinkingTasks = [...thinkingDirective.tasks];
     let iterationCount = 0;
-    const maxIterations = 10; // Maximum number of thinking iterations
+    const maxIterations = 10;
     
     while (currentThinkingTasks.length > 0 && iterationCount < maxIterations) {
       iterationCount++;
       
-      // Get first task from the thinking plan
       const task = currentThinkingTasks.shift();
       if (!task) break;
       
-      // Execute the task directly without creating a new TaskQueue instance
       this.emitEvent('taskStart', { task } as TaskStartEventData);
       const result = await this.executor.runTask(task);
-      this.history.push(result);
+      this.history.push({ 
+        role: 'tool', 
+        id: result.id, 
+        status: result.status, 
+        output: result.output, 
+        error: result.error,
+        timestamp: Date.now()
+      } as ToolHistoryEntry);
       this.emitEvent('taskResult', result);
       
-      // Re-prompt LLM with the result of the task
-      const observePrompt = this.buildPrompt(userMsg, true, [result]);
+      const observePrompt = this.buildPrompt();
       const llmResponse = await this.opts.llm.generate(observePrompt);
+      this.history.push({ role: 'assistant', content: llmResponse, timestamp: Date.now() } as AssistantHistoryEntry);
       this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
       
-      // Parse the new response for directives
       const refinedParsed = parseDirectives(llmResponse);
       this.emitEvent('parsedDirectives', { 
         tasks: refinedParsed.tasks, 
@@ -137,7 +139,6 @@ export class Agent {
         rawText: llmResponse 
       } as ParsedDirectivesEventData);
       
-      // Process any new UI directives
       refinedParsed.ui.forEach(desc => {
         this.emitEvent('uiDirective', { uiDescriptor: desc } as UiDirectiveEventData);
         if (!accumulatedUi.find(existing => existing.id === desc.id)) {
@@ -145,17 +146,14 @@ export class Agent {
         }
       });
       
-      // Check if a new thinking directive is provided
       if (refinedParsed.thinkingDirective) {
-        // Replace remaining tasks with the new plan
         currentThinkingTasks = refinedParsed.thinkingDirective.tasks;
         this.emitEvent('thinkingDirective', { 
           directive: refinedParsed.thinkingDirective 
         } as ThinkingDirectiveEventData);
       } else if (refinedParsed.tasks.length > 0) {
-        // Process any regular tasks received
-        await this.processRegularTasks(refinedParsed.tasks, userMsg, accumulatedUi);
-        break; // Exit thinking mode after processing regular tasks
+        await this.processRegularTasks(refinedParsed.tasks, accumulatedUi);
+        break; 
       }
     }
     
@@ -168,13 +166,11 @@ export class Agent {
    * Process regular tasks with dependencies
    * 
    * @param tasks - The tasks to process
-   * @param userMsg - The original user message
    * @param accumulatedUi - UI components accumulated during processing
    * @private
    */
   private async processRegularTasks(
     tasks: Array<any>, 
-    userMsg: string,
     accumulatedUi: UiDescriptor[]
   ): Promise<void> {
     const taskQueue = new TaskQueue();
@@ -186,63 +182,60 @@ export class Agent {
     while (iterationCount < maxIterations) {
       iterationCount++;
       let tasksExecutedInThisIteration = 0;
-      let newResultsForObservation: TaskResult[] = [];
+      let newResultsForHistory: TaskResult[] = [];
 
       while (true) {
         const task = taskQueue.nextReady();
         if (!task) break; 
         this.emitEvent('taskStart', { task } as TaskStartEventData);
         const result = await this.executor.runTask(task);
-        taskQueue.complete(result);
-        this.history.push(result);
+        taskQueue.complete(result); 
+        newResultsForHistory.push(result); 
         this.emitEvent('taskResult', result);
 
-        if (result.status === 'ok') {
-          newResultsForObservation.push(result);
-        }
         tasksExecutedInThisIteration++;
       }
 
+      newResultsForHistory.forEach(result => {
+        this.history.push({
+          role: 'tool',
+          id: result.id,
+          status: result.status,
+          output: result.output,
+          error: result.error,
+          timestamp: Date.now()
+        } as ToolHistoryEntry);
+        result._observed = true; 
+      });
 
       if (taskQueue.isFinished()) {
-        if (newResultsForObservation.length > 0) {
-          const unobservedResults = newResultsForObservation.filter(r => !r._observed);
-          if (unobservedResults.length === 0 && tasksExecutedInThisIteration > 0) {
-            break;
-          }
-          unobservedResults.forEach(r => r._observed = true);
-
-          if (unobservedResults.length > 0) {
-            const observePrompt = this.buildPrompt(userMsg, true, this.history);
-            const llmResponse = await this.opts.llm.generate(observePrompt);
-            this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
+        if (newResultsForHistory.length > 0) {
+          const observePrompt = this.buildPrompt();
+          const llmResponse = await this.opts.llm.generate(observePrompt);
+          this.history.push({ role: 'assistant', content: llmResponse, timestamp: Date.now() } as AssistantHistoryEntry);
+          this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
             
-            const refinedParsed = parseDirectives(llmResponse);
-            this.emitEvent('parsedDirectives', { 
-              tasks: refinedParsed.tasks, 
-              ui: refinedParsed.ui,
-              thinkingDirective: refinedParsed.thinkingDirective,
-              rawText: llmResponse 
-            } as ParsedDirectivesEventData);
+          const refinedParsed = parseDirectives(llmResponse);
+          this.emitEvent('parsedDirectives', { 
+            tasks: refinedParsed.tasks, 
+            ui: refinedParsed.ui,
+            thinkingDirective: refinedParsed.thinkingDirective,
+            rawText: llmResponse 
+          } as ParsedDirectivesEventData);
             
-            refinedParsed.ui.forEach(desc => {
-              this.emitEvent('uiDirective', { uiDescriptor: desc } as UiDirectiveEventData);
-              if (!accumulatedUi.find(existing => existing.id === desc.id)) {
-                accumulatedUi.push(desc);
-              }
-            });
-            
-            // Check if a thinking directive was returned
-            if (refinedParsed.thinkingDirective) {
-              await this.processThinkingDirective(refinedParsed.thinkingDirective, userMsg, accumulatedUi);
-              break;
-            } else if (refinedParsed.tasks.length > 0) {
-              taskQueue.addMany(refinedParsed.tasks);
-              newResultsForObservation = []; 
-              continue;
-            } else {
-              break;
+          refinedParsed.ui.forEach(desc => {
+            this.emitEvent('uiDirective', { uiDescriptor: desc } as UiDirectiveEventData);
+            if (!accumulatedUi.find(existing => existing.id === desc.id)) {
+              accumulatedUi.push(desc);
             }
+          });
+            
+          if (refinedParsed.thinkingDirective) {
+            await this.processThinkingDirective(refinedParsed.thinkingDirective, accumulatedUi);
+            break;
+          } else if (refinedParsed.tasks.length > 0) {
+            taskQueue.addMany(refinedParsed.tasks);
+            continue;
           } else {
             break;
           }
@@ -261,15 +254,19 @@ export class Agent {
   }
   
   /**
-   * Build a prompt for the LLM based on user input and task history
+   * Build a prompt for the LLM based on the current interaction history.
    * 
-   * @param userMsg - The user's message input
-   * @param includeResults - Whether to include task results in the prompt
-   * @param resultsToInclude - Specific results to include in the prompt
-   * @returns The constructed prompt string
+   * This method constructs a prompt string that includes:
+   * - The system prompt (if provided in agent options).
+   * - A list of available capabilities and their signatures.
+   * - The defined formats for Task, UI, and Thinking directives.
+   * - The sequence of messages from the history (user, assistant, tool observations).
+   * - An "Assistant:" suffix to prompt the LLM for its next response.
+   * 
+   * @returns The constructed prompt string.
    * @private
    */
-  private buildPrompt(userMsg: string, includeResults = false, resultsToInclude?: TaskResult[]): string {
+  private buildPrompt(): string {
     let prompt = '';
     if (this.opts.systemPrompt) {
       prompt += `System: ${this.opts.systemPrompt}\n\n`;
@@ -280,8 +277,7 @@ export class Agent {
       prompt += "- No capabilities are currently available.\n";
     } else {
       for (const capability of this.opts.capabilities) {
-        const capDesc = (capability as any).description || `The '${capability.kind}' capability. Provide necessary parameters in the 'params' field of the Task directive.`;
-        prompt += `- ${capability.kind}: ${capDesc}. Use the following signature: ${capability.signature}\n`;
+        prompt += `- ${capability.kind}: ${capability.description}. Use the following signature: ${capability.signature}\n`;
       }
     }
     
@@ -294,15 +290,30 @@ export class Agent {
     prompt += "3. To define a multi-step plan:\n"
     prompt += "```Thinking\n{\"tasks\":[{\"id\":\"task1\",\"kind\":\"capability_name\",\"params\":{...}}, ...]}\n```\n";
 
-    if (includeResults && resultsToInclude && resultsToInclude.length > 0) {
-      prompt += "\nPrevious Task Results (for your observation):\n";
-      for (const result of resultsToInclude) {
-        prompt += `- Task ${result.id} (${result.status}): ${result.status === 'ok' ? JSON.stringify(result.output) : result.error}\n`;
+    prompt += 'You can add text to the response to explain your thinking or to provide additional context.'
+
+    prompt += "\nInteraction History:\n";
+    for (const entry of this.history) {
+      switch (entry.role) {
+        case 'user':
+          prompt += `User: ${entry.content}\n`;
+          break;
+        case 'assistant':
+          prompt += `Assistant: ${entry.content}\n`;
+          break;
+        case 'tool':
+          const toolEntry = entry as ToolHistoryEntry;
+          prompt += `Tool Observation (Task ID: ${toolEntry.id}, Status: ${toolEntry.status}): `;
+          if (toolEntry.status === 'ok') {
+            prompt += `${JSON.stringify(toolEntry.output)}\n`;
+          } else {
+            prompt += `Error: ${toolEntry.error}\n`;
+          }
+          break;
       }
-      prompt += "\nBased on these results, provide your next set of actions or final response. You can use ::Task, ::Ui, or ::Thinking directives.\n";
     }
     
-    prompt += `\nUser: ${userMsg}\n\nAssistant:`;
+    prompt += `\nAssistant:`;
     return prompt;
   }
 } 
