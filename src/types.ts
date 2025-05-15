@@ -79,14 +79,25 @@ export interface UiDescriptor<P extends Json = Json> {
   events?: string[];
 }
 
+// ----- Thinking Directive -----
+/**
+ * Represents a thinking directive from the LLM, outlining a plan of tasks.
+ * The agent is expected to execute the first task, then re-prompt the LLM.
+ */
+export interface ThinkingDirective {
+  // planId?: string; // Optional: For LLM to track multi-turn plans
+  tasks: Task[];
+}
+
 // ----- Agent Events & Callback -----
 export type AgentEventType =
-  | 'llmResponse'      // New raw response from LLM as it's received
-  | 'parsedDirectives' // After parsing an LLM response, contains new tasks and UI elements
-  | 'taskStart'        // When a task is about to be executed
-  | 'taskResult'       // When a task completes with its result
-  | 'uiDirective'      // When a new UI directive is identified
-  | 'agentEnd';        // When the agent has finished all processing for the current chat turn
+  | 'llmResponse'         // New raw response from LLM as it's received
+  | 'parsedDirectives'    // After parsing an LLM response, contains new tasks, UI, and thinking directives
+  | 'thinkingDirective'   // When a ::Thinking directive is specifically identified and about to be processed
+  | 'taskStart'           // When a task is about to be executed
+  | 'taskResult'          // When a task completes with its result
+  | 'uiDirective'         // When a new UI directive is identified
+  | 'agentEnd';           // When the agent has finished all processing for the current chat turn
 
 export interface LLMResponseEventData {
   rawText: string;
@@ -95,7 +106,12 @@ export interface LLMResponseEventData {
 export interface ParsedDirectivesEventData {
   tasks: Task[];
   ui: UiDescriptor[];
+  thinkingDirective?: ThinkingDirective; // Added thinking directive
   rawText: string; // The raw text from which these were parsed
+}
+
+export interface ThinkingDirectiveEventData {
+  directive: ThinkingDirective;
 }
 
 export interface TaskStartEventData {
@@ -116,7 +132,7 @@ export interface AgentEndEventData {
 
 export interface AgentEvent {
   type: AgentEventType;
-  data: LLMResponseEventData | ParsedDirectivesEventData | TaskStartEventData | TaskResult | UiDirectiveEventData | AgentEndEventData;
+  data: LLMResponseEventData | ParsedDirectivesEventData | ThinkingDirectiveEventData | TaskStartEventData | TaskResult | UiDirectiveEventData | AgentEndEventData;
 }
 
 export type AgentChatCallback = (event: AgentEvent) => void;

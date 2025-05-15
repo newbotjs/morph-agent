@@ -1,4 +1,4 @@
-import { AgentOptions, TaskResult, UiDescriptor, AgentEvent, AgentEndEventData, LLMResponseEventData, ParsedDirectivesEventData, TaskStartEventData, UiDirectiveEventData } from './types';
+import { AgentOptions, TaskResult, UiDescriptor, AgentEvent, AgentEndEventData, LLMResponseEventData, ParsedDirectivesEventData, TaskStartEventData, UiDirectiveEventData, ThinkingDirectiveEventData, ThinkingDirective } from './types';
 import { parseDirectives } from './parser';
 import { TaskQueue } from './task-queue';
 import { Executor } from './executor';
@@ -58,95 +58,24 @@ export class Agent {
     this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
     
     let parsed = parseDirectives(llmResponse);
-    this.emitEvent('parsedDirectives', { tasks: parsed.tasks, ui: parsed.ui, rawText: llmResponse } as ParsedDirectivesEventData);
+    this.emitEvent('parsedDirectives', { 
+      tasks: parsed.tasks, 
+      ui: parsed.ui,
+      thinkingDirective: parsed.thinkingDirective,
+      rawText: llmResponse 
+    } as ParsedDirectivesEventData);
     
     parsed.ui.forEach(desc => {
       this.emitEvent('uiDirective', { uiDescriptor: desc } as UiDirectiveEventData);
       accumulatedUi.push(desc); 
     });
-        
-    const taskQueue = new TaskQueue();
-    taskQueue.addMany(parsed.tasks);
     
-    let iterationCount = 0;
-    const maxIterations = 5; // Increased max iterations slightly
-
-    while (iterationCount < maxIterations) {
-      iterationCount++;
-      let tasksExecutedInThisIteration = 0;
-      let newResultsForObservation: TaskResult[] = [];
-
-      while (true) {
-        const task = taskQueue.nextReady();
-        if (!task) break; 
-        
-        this.emitEvent('taskStart', { task } as TaskStartEventData);
-        const result = await this.executor.runTask(task);
-        taskQueue.complete(result);
-        this.history.push(result);
-        this.emitEvent('taskResult', result);
-        
-        if (result.status === 'ok') { // Only consider successful tasks for re-prompting with LLM for now
-            newResultsForObservation.push(result);
-        }
-        tasksExecutedInThisIteration++;
-      }
-      
-      if (taskQueue.isFinished()) {
-        // If queue is finished, check if the last set of results triggered a final LLM response in the previous iteration.
-        // If not, and there are new results, trigger a final observation prompt.
-        if (newResultsForObservation.length > 0) {
-             // Ensure we don't re-observe the same results if LLM doesn't add new tasks
-            const unobservedResults = newResultsForObservation.filter(r => !r._observed);
-            if (unobservedResults.length === 0 && tasksExecutedInThisIteration > 0) {
-                 // All results from this batch were already observed in a prior loop because LLM didn't add new tasks
-                 // but tasks were run. Break to avoid re-prompting with same data.
-                 break;
-            }
-            unobservedResults.forEach(r => r._observed = true);
-
-            if (unobservedResults.length > 0) {
-                const observePrompt = this.buildPrompt(userMsg, true, this.history);
-                llmResponse = await this.opts.llm.generate(observePrompt);
-                currentTextResponse = llmResponse;
-                this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
-                
-                const refinedParsed = parseDirectives(llmResponse);
-                this.emitEvent('parsedDirectives', { tasks: refinedParsed.tasks, ui: refinedParsed.ui, rawText: llmResponse } as ParsedDirectivesEventData);
-                
-                refinedParsed.ui.forEach(desc => {
-                  this.emitEvent('uiDirective', { uiDescriptor: desc } as UiDirectiveEventData);
-                  // Avoid duplicates if UiAdapter handles idempotency
-                  if (!accumulatedUi.find(existing => existing.id === desc.id)) {
-                      accumulatedUi.push(desc);
-                  }
-                });
-
-                if (refinedParsed.tasks.length > 0) {
-                  taskQueue.addMany(refinedParsed.tasks);
-                  newResultsForObservation = []; // Reset for the next iteration with new tasks
-                  continue; // Continue to process newly added tasks
-                } else {
-                    break; // No new tasks, loop finishes
-                }
-            } else {
-                 break; // No new unobserved results and queue is finished
-            }
-        } else {
-            break; // Queue finished and no new results to observe from this iteration
-        }
-      } else if (tasksExecutedInThisIteration === 0) {
-        // No tasks were run in this iteration, and the queue is not empty.
-        // This means we are stuck on dependencies that are not being met.
-        console.warn("Agent loop stalled: No tasks ready and queue not finished. Breaking.");
-        break;
-      }
-      // If tasks were executed, and queue is not finished, the loop will continue to check nextReady.
-      // If new results were observed and tasks added, the `continue` statement handles it.
-    }
-
-    if(iterationCount >= maxIterations){
-        console.warn(`Agent reached maximum iterations (${maxIterations}).`);
+    // Handle thinking directive if present
+    if (parsed.thinkingDirective) {
+      await this.processThinkingDirective(parsed.thinkingDirective, userMsg, accumulatedUi);
+    } else {
+      // Standard task processing flow
+      await this.processRegularTasks(parsed.tasks, userMsg, accumulatedUi);
     }
 
     if (this.opts.uiAdapter) {
@@ -160,6 +89,174 @@ export class Agent {
     };
     this.emitEvent('agentEnd', endData);
     return endData;
+  }
+
+  /**
+   * Process tasks from a Thinking directive sequentially
+   * 
+   * @param thinkingDirective - The thinking directive to process
+   * @param userMsg - The original user message
+   * @param accumulatedUi - UI components accumulated during processing
+   * @private
+   */
+  private async processThinkingDirective(
+    thinkingDirective: ThinkingDirective,
+    userMsg: string,
+    accumulatedUi: UiDescriptor[]
+  ): Promise<void> {
+    this.emitEvent('thinkingDirective', { directive: thinkingDirective } as ThinkingDirectiveEventData);
+    
+    let currentThinkingTasks = [...thinkingDirective.tasks];
+    let iterationCount = 0;
+    const maxIterations = 10; // Maximum number of thinking iterations
+    
+    while (currentThinkingTasks.length > 0 && iterationCount < maxIterations) {
+      iterationCount++;
+      
+      // Get first task from the thinking plan
+      const task = currentThinkingTasks.shift();
+      if (!task) break;
+      
+      // Execute the task directly without creating a new TaskQueue instance
+      this.emitEvent('taskStart', { task } as TaskStartEventData);
+      const result = await this.executor.runTask(task);
+      this.history.push(result);
+      this.emitEvent('taskResult', result);
+      
+      // Re-prompt LLM with the result of the task
+      const observePrompt = this.buildPrompt(userMsg, true, [result]);
+      const llmResponse = await this.opts.llm.generate(observePrompt);
+      this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
+      
+      // Parse the new response for directives
+      const refinedParsed = parseDirectives(llmResponse);
+      this.emitEvent('parsedDirectives', { 
+        tasks: refinedParsed.tasks, 
+        ui: refinedParsed.ui,
+        thinkingDirective: refinedParsed.thinkingDirective,
+        rawText: llmResponse 
+      } as ParsedDirectivesEventData);
+      
+      // Process any new UI directives
+      refinedParsed.ui.forEach(desc => {
+        this.emitEvent('uiDirective', { uiDescriptor: desc } as UiDirectiveEventData);
+        if (!accumulatedUi.find(existing => existing.id === desc.id)) {
+          accumulatedUi.push(desc);
+        }
+      });
+      
+      // Check if a new thinking directive is provided
+      if (refinedParsed.thinkingDirective) {
+        // Replace remaining tasks with the new plan
+        currentThinkingTasks = refinedParsed.thinkingDirective.tasks;
+        this.emitEvent('thinkingDirective', { 
+          directive: refinedParsed.thinkingDirective 
+        } as ThinkingDirectiveEventData);
+      } else if (refinedParsed.tasks.length > 0) {
+        // Process any regular tasks received
+        await this.processRegularTasks(refinedParsed.tasks, userMsg, accumulatedUi);
+        break; // Exit thinking mode after processing regular tasks
+      }
+    }
+    
+    if (iterationCount >= maxIterations) {
+      console.warn(`Thinking directive reached maximum iterations (${maxIterations}).`);
+    }
+  }
+  
+  /**
+   * Process regular tasks with dependencies
+   * 
+   * @param tasks - The tasks to process
+   * @param userMsg - The original user message
+   * @param accumulatedUi - UI components accumulated during processing
+   * @private
+   */
+  private async processRegularTasks(
+    tasks: Array<any>, 
+    userMsg: string,
+    accumulatedUi: UiDescriptor[]
+  ): Promise<void> {
+    const taskQueue = new TaskQueue();
+    taskQueue.addMany(tasks);
+
+    let iterationCount = 0;
+    const maxIterations = 5;
+    
+    while (iterationCount < maxIterations) {
+      iterationCount++;
+      let tasksExecutedInThisIteration = 0;
+      let newResultsForObservation: TaskResult[] = [];
+
+      while (true) {
+        const task = taskQueue.nextReady();
+        if (!task) break; 
+        this.emitEvent('taskStart', { task } as TaskStartEventData);
+        const result = await this.executor.runTask(task);
+        taskQueue.complete(result);
+        this.history.push(result);
+        this.emitEvent('taskResult', result);
+
+        if (result.status === 'ok') {
+          newResultsForObservation.push(result);
+        }
+        tasksExecutedInThisIteration++;
+      }
+      
+      if (taskQueue.isFinished()) {
+        if (newResultsForObservation.length > 0) {
+          const unobservedResults = newResultsForObservation.filter(r => !r._observed);
+          if (unobservedResults.length === 0 && tasksExecutedInThisIteration > 0) {
+            break;
+          }
+          unobservedResults.forEach(r => r._observed = true);
+
+          if (unobservedResults.length > 0) {
+            const observePrompt = this.buildPrompt(userMsg, true, this.history);
+            const llmResponse = await this.opts.llm.generate(observePrompt);
+            this.emitEvent('llmResponse', { rawText: llmResponse } as LLMResponseEventData);
+            
+            const refinedParsed = parseDirectives(llmResponse);
+            this.emitEvent('parsedDirectives', { 
+              tasks: refinedParsed.tasks, 
+              ui: refinedParsed.ui,
+              thinkingDirective: refinedParsed.thinkingDirective,
+              rawText: llmResponse 
+            } as ParsedDirectivesEventData);
+            
+            refinedParsed.ui.forEach(desc => {
+              this.emitEvent('uiDirective', { uiDescriptor: desc } as UiDirectiveEventData);
+              if (!accumulatedUi.find(existing => existing.id === desc.id)) {
+                accumulatedUi.push(desc);
+              }
+            });
+            
+            // Check if a thinking directive was returned
+            if (refinedParsed.thinkingDirective) {
+              await this.processThinkingDirective(refinedParsed.thinkingDirective, userMsg, accumulatedUi);
+              break;
+            } else if (refinedParsed.tasks.length > 0) {
+              taskQueue.addMany(refinedParsed.tasks);
+              newResultsForObservation = []; 
+              continue;
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      } else if (tasksExecutedInThisIteration === 0) {
+        console.warn("Agent loop stalled: No tasks ready and queue not finished. Breaking.");
+        break;
+      }
+    }
+
+    if(iterationCount >= maxIterations) {
+        console.warn(`Agent reached maximum iterations (${maxIterations}).`);
+    }
   }
   
   /**
@@ -179,21 +276,18 @@ export class Agent {
     
     prompt += "Capabilities:\n";
     for (const capability of this.opts.capabilities) {
-      // Provide a more structured way for LLM to understand capabilities if possible
       prompt += `- ::Task{kind:"${capability.kind}", params:{...}} - Description of ${capability.kind}\n`;
     }
     prompt += "\nTask directive format: ::Task{id:\"unique_id\",kind:\"capability_name\",params:{/* JSON_parameters */},dependsOn:[\"other_task_id\"]}\n";
     prompt += "UI directive format: ::Ui{id:\"unique_ui_id\",type:\"ComponentType\",props:{/* JSON_props */}}\n";
+    prompt += "Thinking directive format: ::Thinking{tasks:[{id:\"task1\",kind:\"capability_name\",params:{...}}, ...]}\n";
 
     if (includeResults && resultsToInclude && resultsToInclude.length > 0) {
       prompt += "\nPrevious Task Results (for your observation):\n";
       for (const result of resultsToInclude) {
-        // Include only results that haven't been internally marked as observed for this specific prompt generation
-        // This logic is now handled by filtering `newResultsForObservation` before calling buildPrompt if needed,
-        // or by relying on the `_observed` flag if passing full history.
         prompt += `- Task ${result.id} (${result.status}): ${result.status === 'ok' ? JSON.stringify(result.output) : result.error}\n`;
       }
-      prompt += "\nBased on these results, provide your next set of actions or final response. Ensure all tasks have unique IDs.\n";
+      prompt += "\nBased on these results, provide your next set of actions or final response. You can use ::Task, ::Ui, or ::Thinking directives.\n";
     }
     
     prompt += `\nUser: ${userMsg}\n\nAssistant:`;

@@ -13,6 +13,38 @@ export class TaskQueue {
   private pending: Set<string> = new Set();
   
   /**
+   * Add a single task to the queue.
+   * If a task with the same ID already has a result, it will not be added to the pending queue again,
+   * effectively preventing re-execution of already completed tasks even if re-issued by the LLM.
+   * The task definition will still be updated in case parameters changed.
+   * 
+   * @param task - Task to add to the queue
+   * @example
+   * ```ts
+   * taskQueue.add({
+   *   id: 't1',
+   *   kind: 'callApi',
+   *   params: { url: '/data' }
+   * });
+   * ```
+   */
+  add(task: Task): void {
+    this.tasks[task.id] = task; // Update task definition regardless
+    
+    // Only add to pending if no result already exists for this task ID
+    if (this.taskResults.hasOwnProperty(task.id)) {
+      console.warn(
+        `TaskQueue: Task ID '${task.id}' was re-added but already has a result. ` +
+        `It will not be added to the pending queue again. Current result will be kept.`
+      );
+      // Optionally, decide if we need to clear the old result if re-execution with new params was intended
+      // For now, we prevent re-execution by not adding to pending.
+      return;
+    }
+    this.pending.add(task.id);
+  }
+
+  /**
    * Add multiple tasks to the queue
    * 
    * @param tasks - Array of tasks to add to the queue
@@ -26,8 +58,7 @@ export class TaskQueue {
    */
   addMany(tasks: Task[]): void {
     for (const task of tasks) {
-      this.tasks[task.id] = task;
-      this.pending.add(task.id);
+      this.add(task);
     }
   }
   
