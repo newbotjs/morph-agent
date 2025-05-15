@@ -83,9 +83,7 @@ export class Agent {
     }
     
     const endData: AgentEndEventData = {
-      history: this.history,
-      finalText: currentTextResponse,
-      finalUi: accumulatedUi
+      history: this.history
     };
     this.emitEvent('agentEnd', endData);
     return endData;

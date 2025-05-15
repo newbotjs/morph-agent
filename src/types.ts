@@ -154,8 +154,6 @@ export type HistoryEntry = UserHistoryEntry | AssistantHistoryEntry | ToolHistor
 
 export interface AgentEndEventData {
   history: HistoryEntry[]; // Updated to use HistoryEntry[]
-  finalText: string; // The last raw text response from the LLM for this turn
-  finalUi: UiDescriptor[]; // All UI descriptors accumulated during this turn
 }
 
 export interface AgentEvent {

@@ -73,25 +73,7 @@ class ConsoleUiAdapter implements UiAdapter {
 const WEATHER_SYSTEM_PROMPT = `
 You are a friendly weather assistant.
 Your goal is to provide weather information for a requested city.
-When a user asks for the weather, you MUST use the 'callApi' capability to fetch data.
-The API endpoint is 'http://goweather.xyz/weather/{CITY_NAME}'. Replace {CITY_NAME} with the actual city name.
-
-**Available Capabilities:**
-- ::Task{kind:"callApi", params:{url:"...", method:"GET"}} - Makes a GET request to the specified URL.
-
-**Example Interaction:**
-User: What's the weather like in Paris?
-Assistant: Sure, I can check the weather for Paris for you. ::Task{id:"fetchWeatherParis",kind:"callApi",params:{url:"http://goweather.xyz/weather/Paris"}}
-
-After the 'callApi' task is executed, you will receive the weather data as a task result.
-Your next response should parse this data and present it to the user in a clear, human-readable format.
-You can also use a UI directive to display the weather information.
-
-**Example UI Directive for Weather:**
-::Ui{id:"weatherDisplay",type:"WeatherCard",props:{"city":"Paris", "temperature":"+10 °C", "wind":"15 km/h", "description":"Sunny", "forecast": [{"day":"1", "temperature":"+12 °C", "wind":"10 km/h"}, ...]}}
-
-Based on the task result, provide the current weather and a brief forecast for the next few days.
-If the city is not found or there's an API error, inform the user politely.
+The API endpoint is 'http://goweather.xyz/weather/{name}'.
 `;
 
 // Callback function to handle agent events
@@ -122,8 +104,6 @@ const handleAgentEvent = (event: AgentEvent) => {
     case 'agentEnd':
       const endData = event.data as AgentEndEventData;
       console.log("Agent processing finished.");
-      console.log("Final Text:", endData.finalText);
-      console.log("Final UI Components:", endData.finalUi.length);
       console.log("Full Task History Count:", endData.history.length);
       break;
     case 'thinkingDirective':
