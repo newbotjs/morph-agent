@@ -202,7 +202,8 @@ export class Agent {
         }
         tasksExecutedInThisIteration++;
       }
-      
+
+
       if (taskQueue.isFinished()) {
         if (newResultsForObservation.length > 0) {
           const unobservedResults = newResultsForObservation.filter(r => !r._observed);
@@ -274,13 +275,24 @@ export class Agent {
       prompt += `System: ${this.opts.systemPrompt}\n\n`;
     }
     
-    prompt += "Capabilities:\n";
-    for (const capability of this.opts.capabilities) {
-      prompt += `- ::Task{kind:"${capability.kind}", params:{...}} - Description of ${capability.kind}\n`;
+    prompt += "Capabilities (for use with the 'Task' directive):\n";
+    if (!this.opts.capabilities || this.opts.capabilities.length === 0) {
+      prompt += "- No capabilities are currently available.\n";
+    } else {
+      for (const capability of this.opts.capabilities) {
+        const capDesc = (capability as any).description || `The '${capability.kind}' capability. Provide necessary parameters in the 'params' field of the Task directive.`;
+        prompt += `- ${capability.kind}: ${capDesc}. Use the following signature: ${capability.signature}\n`;
+      }
     }
-    prompt += "\nTask directive format: ::Task{id:\"unique_id\",kind:\"capability_name\",params:{/* JSON_parameters */},dependsOn:[\"other_task_id\"]}\n";
-    prompt += "UI directive format: ::Ui{id:\"unique_ui_id\",type:\"ComponentType\",props:{/* JSON_props */}}\n";
-    prompt += "Thinking directive format: ::Thinking{tasks:[{id:\"task1\",kind:\"capability_name\",params:{...}}, ...]}\n";
+    
+    prompt += "\nDirective formats to use in your response:\n";
+    prompt += "1. To execute a capability:\n"
+    prompt += "```Task\n{\"id\":\"unique_id\",\"kind\":\"capability_name\",\"params\":{/* JSON_parameters */},\"dependsOn\":[\"other_task_id\"]}\n```\n";
+    prompt += "   (Replace 'capability_name' with one of the kinds listed under 'Capabilities'.)\n";
+    prompt += "2. To render a UI component:\n"
+    prompt += "```Ui\n{\"id\":\"unique_ui_id\",\"type\":\"ComponentType\",\"props\":{/* JSON_props */}}\n```\n";
+    prompt += "3. To define a multi-step plan:\n"
+    prompt += "```Thinking\n{\"tasks\":[{\"id\":\"task1\",\"kind\":\"capability_name\",\"params\":{...}}, ...]}\n```\n";
 
     if (includeResults && resultsToInclude && resultsToInclude.length > 0) {
       prompt += "\nPrevious Task Results (for your observation):\n";

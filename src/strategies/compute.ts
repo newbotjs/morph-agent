@@ -52,6 +52,8 @@ export interface ComputeResult {
  */
 export const ComputeStrategy: CapabilityStrategy<ComputeParams, ComputeResult> = {
   kind: 'compute',
+  description: 'Perform simple arithmetic operations and string formatting',
+  signature: 'operation: "add" | "subtract" | "multiply" | "divide" | "average" | "format", values: number[], format: string, value: Json',
   
   async run({ operation, values = [], format = '', value }, _env) {
     let result: number | string;

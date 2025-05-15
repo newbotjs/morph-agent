@@ -1,10 +1,12 @@
 {
   "name": "llm-agent",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "test": "vitest",
-    "build": "tsup"
+    "build": "tsup src/index.ts --out-dir dist",
+    "dev": "tsup src/index.ts --out-dir dist --watch"
   },
   "keywords": [],
   "author": "Samuel Ronce",
@@ -17,5 +19,6 @@
   },
   "dependencies": {
     "openai": "^4.98.0"
-  }
+  },
+  "type": "module"
 }

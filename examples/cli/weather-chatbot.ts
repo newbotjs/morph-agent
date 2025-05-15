@@ -1,6 +1,7 @@
-import { Agent, LLMSession, UiAdapter, UiDescriptor, Json, AgentOptions, RuntimeEnv, CapabilityStrategy, AgentEvent, AgentEndEventData, LLMResponseEventData, ParsedDirectivesEventData, TaskStartEventData, TaskResult, UiDirectiveEventData } from '../src'; // Adjust path if running from outside /examples
-import { CallApiStrategy } from '../src/strategies/call-api'; // More direct import
+import { Agent, LLMSession, UiAdapter, UiDescriptor, Json, AgentOptions, RuntimeEnv, CapabilityStrategy, AgentEvent, AgentEndEventData, LLMResponseEventData, ParsedDirectivesEventData, TaskStartEventData, TaskResult, UiDirectiveEventData, ThinkingDirectiveEventData } from '../../src'; // Adjust path if running from outside /examples
+import { CallApiStrategy } from '../../src/strategies/call-api'; // More direct import
 import OpenAI from 'openai';
+import * as readline from 'readline';
 
 /**
  * Implements the LLMSession interface using the OpenAI API.
@@ -125,6 +126,9 @@ const handleAgentEvent = (event: AgentEvent) => {
       console.log("Final UI Components:", endData.finalUi.length);
       console.log("Full Task History Count:", endData.history.length);
       break;
+    case 'thinkingDirective':
+      console.log("Thinking Directive Received:", (event.data as ThinkingDirectiveEventData));
+      break;
     default:
       // Exhaustive check for unhandled event types (optional)
       const _exhaustiveCheck: never = event.type;
@@ -157,7 +161,6 @@ async function runWeatherChatbot() {
   console.log("Weather Chatbot Initialized. Type 'quit' to exit.");
   console.log("Example: What is the weather in London?");
 
-  const readline = await import('readline');
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,

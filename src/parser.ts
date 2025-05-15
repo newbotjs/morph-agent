@@ -10,52 +10,73 @@ export interface ParsedMessage {
   thinkingDirective?: ThinkingDirective;
 }
 
+const DIRECTIVE_PATTERN = /```(Task|Ui|Thinking)\n([\s\S]*?)\n```/g;
+
 /**
- * Parse a string containing ::Task{…}, ::Ui{…}, and ::Thinking{…} directives.
- * The original raw string is returned along with extracted tasks, UI elements, and thinking directives.
- * 
- * @param raw - The raw string to parse
- * @returns An object containing the original raw text, tasks, UI descriptors, and thinking directive
+ * Parses a raw text string from an LLM to extract tasks, UI components, and thinking directives.
+ * It looks for specific patterns like ```Task\n{...}```, ```Ui\n{...}```, and ```Thinking\n{...}```.
+ * The content within the braces is expected to be valid JSON.
+ *
+ * @param rawText - The raw text output from the LLM.
+ * @returns An object containing the original raw text, and arrays of parsed tasks, UI descriptors, and an optional thinking directive.
  * @example
  * ```ts
- * const rawInput = "Let\'s check flights ::Task{id:\'t1\',kind:\'callApi\',params:{url:\'/flights\'}}";
- * const parsed = parseDirectives(rawInput);
- * console.log(parsed.rawText); // "Let\'s check flights ::Task{id:\'t1\',kind:\'callApi\',params:{url:\'/flights\'}}"
- * console.log(parsed.tasks[0].id); // \'t1\'
+ * const result = parseDirectives("Some text from LLM ```Task\n{\"id\":\"t1\",\"kind\":\"api\"}``` and ```Ui\n{\"id\":\"ui1\",\"type\":\"Button\"}```");
+ * console.log(result.tasks); // [{id: "t1", kind: "api"}]
+ * console.log(result.ui);    // [{id: "ui1", type: "Button"}]
  * ```
  */
-export function parseDirectives(raw: string): ParsedMessage {
+export function parseDirectives(rawText: string): ParsedMessage {
   const tasks: Task[] = [];
   const ui: UiDescriptor[] = [];
   let thinkingDirective: ThinkingDirective | undefined;
 
-  // Regex to find directives and capture their type and content.
-  const directiveRegex = /::(?<type>Task|Ui|Thinking)\s*\{(?<content>(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}/g;
-
   let match;
-  while ((match = directiveRegex.exec(raw)) !== null) {
-    const type = match.groups?.type;
-    const rawContent = match.groups?.content?.trim() ?? "";
+  // Reset lastIndex for global regex
+  DIRECTIVE_PATTERN.lastIndex = 0; 
+  
+  while ((match = DIRECTIVE_PATTERN.exec(rawText)) !== null) {
+    const directiveKind = match[1];
+    const jsonPayload = match[2].trim();
 
-    if (type) {
-      try {
-        // Only add quotes around keys that are not already quoted
-        const objectBody = rawContent.replace(/(?<!["'])\b(\w+)\s*:/g, '"$1":');
-        const parsedData = JSON.parse(rawContent === "" ? "{}" : `{${objectBody}}`);
+    try {
+      // Attempt to parse the JSON payload
+      const payload = JSON.parse(jsonPayload);
 
-        if (type === 'Task') {
-          tasks.push(parsedData as Task);
-        } else if (type === 'Ui') {
-          ui.push(parsedData as UiDescriptor);
-        } else if (type === 'Thinking') {
-          thinkingDirective = parsedData as ThinkingDirective;
+      if (directiveKind === 'Task') {
+        // Validate task structure if necessary
+        if (payload.id && payload.kind) {
+          tasks.push(payload as Task);
+        } else {
+          console.warn('Invalid Task structure:', payload);
         }
-      } catch (error) {
-        console.error(`Failed to parse ${type} directive content: "${match.groups?.content}". Error:`, error);
+      } else if (directiveKind === 'Ui') {
+        // Validate UI descriptor structure if necessary
+        if (payload.id && payload.type) {
+          ui.push(payload as UiDescriptor);
+        } else {
+          console.warn('Invalid Ui structure:', payload);
+        }
+      } else if (directiveKind === 'Thinking') {
+        // Validate Thinking directive structure
+        if (Array.isArray(payload.tasks)) {
+          thinkingDirective = payload as ThinkingDirective;
+        } else {
+          console.warn('Invalid Thinking structure:', payload);
+        }
       }
+    } catch (error) {
+      console.warn(
+        `Failed to parse JSON for ${directiveKind} directive: ${jsonPayload}`,
+        error,
+      );
     }
   }
-  
-  // Return the original raw text, along with parsed tasks, UI elements, and thinking directive
-  return { rawText: raw, tasks, ui, thinkingDirective };
+
+  return {
+    rawText,
+    tasks,
+    ui,
+    thinkingDirective,
+  };
 } 

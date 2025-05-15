@@ -58,6 +58,8 @@ export interface CallApiResult {
  */
 export const CallApiStrategy: CapabilityStrategy<CallApiParams, CallApiResult> = {
   kind: 'callApi',
+  description: 'Makes an HTTP request to a specified URL and returns the response. Supports GET, POST, etc., and JSON request/response bodies.',
+  signature: 'url: string, method?: string, body?: Json, headers?: Record<string, string>',
   
   async run({ url, method = 'GET', body, headers = {} }, env) {
     const options: RequestInit = {

@@ -181,6 +181,17 @@ export interface CapabilityStrategy<
   R extends Json = Json
 > {
   kind: CapabilityKind;
+  /**
+   * A short description of what the capability does.
+   * This is used by the LLM to understand when to use this capability.
+   */
+  description: string;
+  /**
+   * A signature hint for the LLM, indicating the expected parameters.
+   * This helps the LLM to correctly format the Task directive's params.
+   * e.g., "url: string, method?: 'GET' | 'POST', body?: object"
+   */
+  signature: string;
   run(params: P, env: RuntimeEnv): Promise<R>;
 }
 
