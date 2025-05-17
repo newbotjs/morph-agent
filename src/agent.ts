@@ -37,7 +37,7 @@ export class Agent {
   /**
    * Process a user message through a complete RAO cycle
    * 
-   * @param userMsg - The user's message input
+   * @param initialInput - The initial input, either a string or an array of history entries
    * @returns An object containing the final history, text response, and UI components
    * @example
    * ```ts
@@ -48,8 +48,13 @@ export class Agent {
    * // response.history contains the full interaction log
    * ```
    */
-  async chat(userMsg: string): Promise<AgentEndEventData> {
-    this.history = [{ role: 'user', content: userMsg, timestamp: Date.now() } as UserHistoryEntry];
+  async chat(initialInput: string | HistoryEntry[]): Promise<AgentEndEventData> {
+    if (typeof initialInput === 'string') {
+      this.history = [{ role: 'user', content: initialInput, timestamp: Date.now() } as UserHistoryEntry];
+    } else {
+      this.history = [...initialInput]; // Use the provided history directly
+    }
+    
     let currentTextResponse = "";
     let accumulatedUi: UiDescriptor[] = [];
     

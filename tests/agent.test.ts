@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Agent } from '../src/agent';
-import { AgentOptions, LLMSession, CapabilityStrategy, TaskResult, UserHistoryEntry, AssistantHistoryEntry, ToolHistoryEntry, Task, UiDescriptor } from '../src/types';
+import { AgentOptions, LLMSession, CapabilityStrategy, TaskResult, UserHistoryEntry, AssistantHistoryEntry, ToolHistoryEntry, Task, UiDescriptor, HistoryEntry } from '../src/types';
 
 // Mock LLM
 const mockLlm: LLMSession = {
@@ -505,6 +505,48 @@ ${JSON.stringify(taskObj)}
       expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
       
       consoleWarnSpy.mockRestore();
+    });
+
+    it('should process input when a history array is provided', async () => {
+      const llmMockWithMessage = {
+        generate: vi.fn().mockResolvedValue('LLM acknowledges history'),
+      };
+      const opts: AgentOptions = {
+        llm: llmMockWithMessage,
+        capabilities: [],
+        systemPrompt: 'Test System',
+      };
+      const agent = new Agent(opts);
+      const onEventMock = vi.fn();
+      agent['onEvent'] = onEventMock;
+
+      const initialHistory: HistoryEntry[] = [
+        { role: 'user', content: 'First user message', timestamp: Date.now() - 10000 } as UserHistoryEntry,
+        { role: 'assistant', content: 'First assistant response', timestamp: Date.now() - 9000 } as AssistantHistoryEntry,
+        { role: 'user', content: 'Second user message', timestamp: Date.now() - 8000 } as UserHistoryEntry,
+      ];
+
+      const result = await agent.chat(initialHistory);
+
+      expect(llmMockWithMessage.generate).toHaveBeenCalledTimes(1);
+      const generatedPrompt = llmMockWithMessage.generate.mock.calls[0][0] as string;
+      
+      expect(generatedPrompt).toContain('System: Test System');
+      expect(generatedPrompt).toContain('User: First user message');
+      expect(generatedPrompt).toContain('Assistant: First assistant response');
+      expect(generatedPrompt).toContain('User: Second user message');
+      expect(generatedPrompt).toContain('\nAssistant:');
+
+      // The history in the result should be the initial history + the new assistant response
+      expect(result.history).toHaveLength(4);
+      expect((result.history[0] as UserHistoryEntry).content).toBe('First user message');
+      expect((result.history[1] as AssistantHistoryEntry).content).toBe('First assistant response');
+      expect((result.history[2] as UserHistoryEntry).content).toBe('Second user message');
+      expect(result.history[3].role).toBe('assistant');
+      expect((result.history[3] as AssistantHistoryEntry).content).toBe('LLM acknowledges history');
+
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: 'LLM acknowledges history' } }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
     });
 
   });
