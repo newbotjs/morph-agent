@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Agent } from '../src/agent';
-import { AgentOptions, LLMSession, CapabilityStrategy, TaskResult, UserHistoryEntry, AssistantHistoryEntry, ToolHistoryEntry, Task } from '../src/types';
+import { AgentOptions, LLMSession, CapabilityStrategy, TaskResult, UserHistoryEntry, AssistantHistoryEntry, ToolHistoryEntry, Task, UiDescriptor } from '../src/types';
 
 // Mock LLM
 const mockLlm: LLMSession = {
@@ -105,50 +105,148 @@ describe('Agent', () => {
       const result = await agent.chat('User says hi');
 
       expect(llmMockWithMessage.generate).toHaveBeenCalledTimes(1);
-      expect(result.finalText).toBe('LLM says hello!');
+      // Check initial assistant response from history
+      const initialAssistantResponse = result.history.find(entry => entry.role === 'assistant') as AssistantHistoryEntry;
+      expect(initialAssistantResponse?.content).toBe('LLM says hello!');
       expect(result.history).toHaveLength(2);
       expect(result.history[0].role).toBe('user');
       expect(result.history[1].role).toBe('assistant');
-      expect(result.finalUi).toEqual([]);
+      // Check that no UI directives were emitted for this simple case
+      expect(onEventMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'uiDirective' }));
 
       expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: 'LLM says hello!' } }));
-      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'parsedDirectives' }));
-      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: { 
+          tasks: [], 
+          ui: [], 
+          thinkingDirective: undefined, 
+          rawText: 'LLM says hello!' 
+        } 
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd', data: { history: result.history } }));
     });
 
-    it('should execute a task directive and get a refined response', async () => {
-      const taskResult: TaskResult = { id: 'task1', status: 'ok', output: { success: true } };
-      const mockRun = vi.fn().mockResolvedValue({ success: true }); // Capability run returns the output directly
-      const capabilityWithMockRun: CapabilityStrategy<any, any> = { ...mockCapability1, run: mockRun };
+    it('should process a single regular task directive', async () => {
+      const taskResult: TaskResult = { id: 'regTask1', status: 'ok', output: { result: 'done' } };
+      const mockRun = vi.fn().mockResolvedValue({ result: 'done' });
+      const capWithMock: CapabilityStrategy<any,any> = { ...mockCapability1, kind: 'capRegular' as any, run: mockRun };
 
-      const llmMockWithTask = {
+      const llmResponseWithTask = 'Okay, doing the task. ```Task\n{"id":"regTask1","kind":"capRegular","params":{"p":"go"}}\n```';
+      const llmResponseAfterTask = 'Task done!';
+
+      const llmMock = {
         generate: vi.fn()
-          .mockResolvedValueOnce('Okay, I will do that. ::Task\n{"id":"task1","kind":"mockCapability1","params":{"p":"val"}}')
-          .mockResolvedValueOnce('Task completed. Here is the UI. ::Ui\n{"id":"ui1","type":"Info","props":{"message":"Done!"}}'),
+          .mockResolvedValueOnce(llmResponseWithTask)
+          .mockResolvedValueOnce(llmResponseAfterTask)
       };
 
       const opts: AgentOptions = {
-        llm: llmMockWithTask,
-        capabilities: [capabilityWithMockRun],
+        llm: llmMock,
+        capabilities: [capWithMock],
       };
       const agent = new Agent(opts);
       const onEventMock = vi.fn();
       agent['onEvent'] = onEventMock;
 
-      const result = await agent.chat('Perform mockCapability1');
-      const expectedTask: Task = {id: 'task1', kind: 'mockCapability1' as any, params: {p: 'val'}};
+      const result = await agent.chat('Do a regular task');
+      const expectedTask: Task = {id: 'regTask1', kind: 'capRegular' as any, params: {p: 'go'}};
 
-      expect(llmMockWithTask.generate).toHaveBeenCalledTimes(2); // Initial + after task
-      expect(mockRun).toHaveBeenCalledWith({ p: 'val' }, expect.anything()); // executor adds runtime env
-      expect(result.finalText).toBe('Okay, I will do that. ::Task\n{"id":"task1","kind":"mockCapability1","params":{"p":"val"}}');
-      expect(result.history).toHaveLength(4); // user, assistant, tool, assistant
-      expect(result.history[2].role).toBe('tool');
-      expect((result.history[2] as ToolHistoryEntry).output).toEqual({ success: true });
-      expect(result.finalUi).toEqual([{ id: 'ui1', type: 'Info', props: { message: 'Done!' } }]);
-      
+      expect(llmMock.generate).toHaveBeenCalledTimes(2); // Initial + after task
+      expect(mockRun).toHaveBeenCalledWith({ p: 'go' }, expect.anything());
+
+      expect(result.history).toHaveLength(4); // user, assistant(task), tool, assistant
+      expect((result.history[2] as ToolHistoryEntry).id).toBe('regTask1');
+      expect((result.history[2] as ToolHistoryEntry).status).toBe('ok');
+      expect((result.history[2] as ToolHistoryEntry).output).toEqual({ result: 'done' });
+
+      // Verify event emissions in correct order
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: llmResponseWithTask }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives',
+        data: expect.objectContaining({
+          rawText: llmResponseWithTask,
+          tasks: [expectedTask]
+        })
+      }));
       expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskStart', data: { task: expectedTask } }));
-      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskResult', data: taskResult }));
-      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'uiDirective', data: { uiDescriptor: { id: 'ui1', type: 'Info', props: { message: 'Done!' } } } }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'taskResult', 
+        data: expect.objectContaining({ id: 'regTask1', status: 'ok' })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: llmResponseAfterTask }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: llmResponseAfterTask,
+          tasks: [] 
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
+    });
+
+    it('should handle a task error correctly', async () => {
+      const mockRunError = vi.fn().mockRejectedValue(new Error('Task failed miserably'));
+      const capWithError: CapabilityStrategy<any,any> = { ...mockCapability1, kind: 'capError' as any, run: mockRunError };
+
+      const llmResponseWithTask = 'Trying a task that will fail. ```Task\n{"id":"errorTask1","kind":"capError","params":{"p":"fail"}}\n```';
+      const llmResponseAfterError = 'Oh no, it failed.';
+
+      const llmMock = {
+        generate: vi.fn()
+          .mockResolvedValueOnce(llmResponseWithTask)
+          .mockResolvedValueOnce(llmResponseAfterError)
+      };
+
+      const opts: AgentOptions = {
+        llm: llmMock,
+        capabilities: [capWithError],
+      };
+      const agent = new Agent(opts);
+      const onEventMock = vi.fn();
+      agent['onEvent'] = onEventMock;
+
+      const result = await agent.chat('Test task failure');
+      const expectedTask: Task = {id: 'errorTask1', kind: 'capError' as any, params: {p: 'fail'}};
+      const expectedTaskResult: TaskResult = { 
+        id: 'errorTask1', 
+        status: 'error', 
+        error: 'Error: Task failed miserably',
+        output: undefined
+      }; 
+
+      expect(llmMock.generate).toHaveBeenCalledTimes(2);
+      expect(mockRunError).toHaveBeenCalledWith({ p: 'fail' }, expect.anything());
+
+      expect(result.history).toHaveLength(4); // user, assistant(task), tool(error), assistant
+      const toolEntry = result.history[2] as ToolHistoryEntry;
+      expect(toolEntry.id).toBe('errorTask1');
+      expect(toolEntry.status).toBe('error');
+      expect(toolEntry.error).toBe('Task failed miserably');
+
+      // Verify event emissions in correct order
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: llmResponseWithTask }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: llmResponseWithTask,
+          tasks: [expectedTask]
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskStart', data: { task: expectedTask } }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'taskResult', 
+        data: expect.objectContaining({ id: 'errorTask1', status: 'error', error: 'Task failed miserably' })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: llmResponseAfterError }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: llmResponseAfterError,
+          tasks: [] 
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
     });
 
     it('should process a thinking directive', async () => {
@@ -161,11 +259,15 @@ describe('Agent', () => {
       const cap1WithMock: CapabilityStrategy<any,any> = { ...mockCapability1, kind: 'cap1' as any, run: mockRun1 };
       const cap2WithMock: CapabilityStrategy<any,any> = { ...mockCapability2, kind: 'cap2' as any, run: mockRun2 };
 
+      const initialLlmThinkingResponse = 'Okay, planning... ```Thinking\n{"tasks":[{"id":"thinkTask1","kind":"cap1","params":{"p1":"abc"}},{"id":"thinkTask2","kind":"cap2","params":{"p2":123}}]}\n```';
+      const afterTask1LlmResponse = 'First step done. ```Ui\n{"id":"ui_step1","type":"Progress","props":{"text":"Step 1/2"}}\n```';
+      const afterTask2LlmResponse = 'All steps done! ```Ui\n{"id":"ui_final","type":"Success","props":{"message":"All good!"}}\n```';
+
       const llmMockWithThinking = {
         generate: vi.fn()
-          .mockResolvedValueOnce('Okay, planning... ::Thinking\n{"tasks":[{"id":"thinkTask1","kind":"cap1","params":{"p1":"abc"}},{"id":"thinkTask2","kind":"cap2","params":{"p2":123}}]}')
-          .mockResolvedValueOnce('First step done. ::Ui\n{"id":"ui_step1","type":"Progress","props":{"text":"Step 1/2"}}') // After thinkTask1
-          .mockResolvedValueOnce('All steps done! ::Ui\n{"id":"ui_final","type":"Success","props":{"message":"All good!"}}') // After thinkTask2
+          .mockResolvedValueOnce(initialLlmThinkingResponse)
+          .mockResolvedValueOnce(afterTask1LlmResponse)
+          .mockResolvedValueOnce(afterTask2LlmResponse)
       };
 
       const opts: AgentOptions = {
@@ -179,28 +281,232 @@ describe('Agent', () => {
       const result = await agent.chat('Execute a plan');
       const expectedTask1: Task = {id: 'thinkTask1', kind: 'cap1' as any, params: {p1: 'abc'}};
       const expectedTask2: Task = {id: 'thinkTask2', kind: 'cap2' as any, params: {p2: 123}};
-      
+      const expectedUiStep1 = { id: 'ui_step1', type: 'Progress', props: { text: 'Step 1/2' } };
+      const expectedUiFinal = { id: 'ui_final', type: 'Success', props: { message: 'All good!' } };
+
       expect(llmMockWithThinking.generate).toHaveBeenCalledTimes(3); // Initial + after task1 + after task2
       expect(mockRun1).toHaveBeenCalledWith({ p1: 'abc' }, expect.anything());
       expect(mockRun2).toHaveBeenCalledWith({ p2: 123 }, expect.anything());
 
-      expect(result.finalText).toBe('Okay, planning... ::Thinking\n{"tasks":[{"id":"thinkTask1","kind":"cap1","params":{"p1":"abc"}},{"id":"thinkTask2","kind":"cap2","params":{"p2":123}}]}');
+      // Check initial assistant response from history
+      const initialAssistantResponse = result.history.find(entry => entry.role === 'assistant' && entry.content === initialLlmThinkingResponse) as AssistantHistoryEntry;
+      expect(initialAssistantResponse?.content).toBe(initialLlmThinkingResponse);
+      
       expect(result.history).toHaveLength(6); // user, assistant(think), tool1, assistant, tool2, assistant
       expect((result.history[2] as ToolHistoryEntry).id).toBe('thinkTask1');
       expect((result.history[4] as ToolHistoryEntry).id).toBe('thinkTask2');
 
-      expect(result.finalUi).toEqual([
-        { id: 'ui_step1', type: 'Progress', props: { text: 'Step 1/2' } },
-        { id: 'ui_final', type: 'Success', props: { message: 'All good!' } },
-      ]);
+      // Check UI directives
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'uiDirective', data: { uiDescriptor: expectedUiStep1 }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'uiDirective', data: { uiDescriptor: expectedUiFinal }}));
+      
+      // Check thinking directive event
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'thinkingDirective', 
+        data: { directive: { tasks: [expectedTask1, expectedTask2] } }
+      }));
 
-      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'thinkingDirective' }));
+      // Check task start and result events
       expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskStart', data: { task: expectedTask1 } }));
       expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskResult', data: taskResult1 }));
       expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskStart', data: { task: expectedTask2 } }));
       expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskResult', data: taskResult2 }));
-      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'uiDirective', data: { uiDescriptor: {id: 'ui_step1', type: 'Progress', props: {text: 'Step 1/2'}}}}));
-      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'uiDirective', data: { uiDescriptor: {id: 'ui_final', type: 'Success', props: {message: 'All good!'}}}}));
+
+      // Check llmResponse events
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: initialLlmThinkingResponse }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: afterTask1LlmResponse }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: afterTask2LlmResponse }}));
+      
+      // Check parsedDirectives events
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: initialLlmThinkingResponse,
+          thinkingDirective: { tasks: [expectedTask1, expectedTask2] }
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: afterTask1LlmResponse,
+          ui: [expectedUiStep1]
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: afterTask2LlmResponse,
+          ui: [expectedUiFinal]
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
     });
+
+    it('should process combined UI and Task directives', async () => {
+      const taskResult: TaskResult = { id: 'combinedTask1', status: 'ok', output: { data: 'success' } };
+      const mockRun = vi.fn().mockResolvedValue({ data: 'success' });
+      const capWithMock: CapabilityStrategy<any,any> = { ...mockCapability1, kind: 'capCombined' as any, run: mockRun };
+
+      const llmResponseWithDirectives = 'Showing UI and doing a task. ```Ui\n{"id":"ui1","type":"Info","props":{"text":"Processing..."}}\n```\nSome descriptive text.\n```Task\n{"id":"combinedTask1","kind":"capCombined","params":{"action":"run"}}\n```';
+      const llmResponseAfterTask = 'All done with UI and task!';
+      
+      const llmMock = {
+        generate: vi.fn()
+          .mockResolvedValueOnce(llmResponseWithDirectives)
+          .mockResolvedValueOnce(llmResponseAfterTask)
+      };
+
+      const opts: AgentOptions = {
+        llm: llmMock,
+        capabilities: [capWithMock],
+      };
+      const agent = new Agent(opts);
+      const onEventMock = vi.fn();
+      agent['onEvent'] = onEventMock;
+
+      const result = await agent.chat('Show UI and run task');
+      const expectedTask: Task = {id: 'combinedTask1', kind: 'capCombined' as any, params: {action: 'run'}};
+      const expectedUi: UiDescriptor = {id: 'ui1', type: 'Info', props: {text: 'Processing...'}};
+
+      expect(llmMock.generate).toHaveBeenCalledTimes(2);
+      expect(mockRun).toHaveBeenCalledWith({ action: 'run' }, expect.anything());
+
+      expect(result.history).toHaveLength(4); // user, assistant(ui+task), tool, assistant
+      expect((result.history[2] as ToolHistoryEntry).id).toBe('combinedTask1');
+
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'uiDirective', data: { uiDescriptor: expectedUi }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskStart', data: { task: expectedTask } }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'taskResult', 
+        data: expect.objectContaining({ id: 'combinedTask1', status: 'ok' })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: llmResponseWithDirectives }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'llmResponse', data: { rawText: llmResponseAfterTask }}));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: llmResponseWithDirectives,
+          tasks: [expectedTask],
+          ui: [expectedUi]
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
+    });
+
+    it('should process tasks with dependencies correctly', async () => {
+      const taskResult1: TaskResult = { id: 'depTask1', status: 'ok', output: { data: 'first done' } };
+      const taskResult2: TaskResult = { id: 'depTask2', status: 'ok', output: { data: 'second done' } };
+
+      const mockRun1 = vi.fn().mockResolvedValue({ data: 'first done' });
+      const mockRun2 = vi.fn().mockResolvedValue({ data: 'second done' });
+
+      const cap1WithMock: CapabilityStrategy<any,any> = { ...mockCapability1, kind: 'capDep1' as any, run: mockRun1 };
+      const cap2WithMock: CapabilityStrategy<any,any> = { ...mockCapability2, kind: 'capDep2' as any, run: mockRun2 };
+
+      // depTask2 depends on depTask1
+      const llmResponseWithDependentTasks = 'Executing a sequence of tasks. ```Task\n{"id":"depTask2","kind":"capDep2","params":{"p2":456},"dependsOn":["depTask1"]}\n```\n```Task\n{"id":"depTask1","kind":"capDep1","params":{"p1":123}}\n```';
+      const llmResponseAfterTasks = 'All dependent tasks completed!';
+
+      const llmMock = {
+        generate: vi.fn()
+          .mockResolvedValueOnce(llmResponseWithDependentTasks)
+          .mockResolvedValueOnce(llmResponseAfterTasks) 
+      };
+
+      const opts: AgentOptions = {
+        llm: llmMock,
+        capabilities: [cap1WithMock, cap2WithMock],
+      };
+      const agent = new Agent(opts);
+      const onEventMock = vi.fn();
+      agent['onEvent'] = onEventMock;
+
+      const result = await agent.chat('Run tasks with dependency');
+      const expectedTask1: Task = {id: 'depTask1', kind: 'capDep1' as any, params: {p1: 123}};
+      const expectedTask2: Task = {id: 'depTask2', kind: 'capDep2' as any, params: {p2: 456}, dependsOn: ['depTask1']};
+
+      expect(llmMock.generate).toHaveBeenCalledTimes(2); 
+      expect(mockRun1).toHaveBeenCalledWith({ p1: 123 }, expect.anything());
+      expect(mockRun2).toHaveBeenCalledWith({ p2: 456 }, expect.anything());
+      // Ensure mockRun1 is called before mockRun2 due to dependency
+      const mockRun1Order = mockRun1.mock.invocationCallOrder[0];
+      const mockRun2Order = mockRun2.mock.invocationCallOrder[0];
+      expect(mockRun1Order).toBeLessThan(mockRun2Order);
+
+      expect(result.history).toHaveLength(5); // user, assistant(tasks), tool1, tool2, assistant
+      expect((result.history[2] as ToolHistoryEntry).id).toBe('depTask1');
+      expect((result.history[3] as ToolHistoryEntry).id).toBe('depTask2');
+      
+      // Check events for task1
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskStart', data: { task: expectedTask1 } }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'taskResult', 
+        data: expect.objectContaining({ id: 'depTask1', status: 'ok' })
+      }));
+      // Check events for task2
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'taskStart', data: { task: expectedTask2 } }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'taskResult', 
+        data: expect.objectContaining({ id: 'depTask2', status: 'ok' })
+      }));
+
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ 
+        type: 'parsedDirectives', 
+        data: expect.objectContaining({ 
+          rawText: llmResponseWithDependentTasks,
+          tasks: expect.arrayContaining([expectedTask1, expectedTask2])
+        })
+      }));
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
+    });
+
+    it('should stop and warn if thinking directive reaches max iterations', async () => {
+      const mockRun = vi.fn().mockResolvedValue({ step: 'done' });
+      const capInfinite: CapabilityStrategy<any,any> = { ...mockCapability1, kind: 'capInfinite' as any, run: mockRun };
+
+      // Simplified string construction
+      const llmRecurringThinkingResponse = (iteration: number) => {
+        const taskObj = {
+          tasks: [{ 
+            id: `thinkLoop${iteration}`, 
+            kind: 'capInfinite', 
+            params: { i: iteration } 
+          }]
+        };
+        return `Thinking step ${iteration}... \`\`\`Thinking
+${JSON.stringify(taskObj)}
+\`\`\``;
+      };
+
+      const llmMock = {
+        generate: vi.fn(),
+      };
+
+      // Agent's maxIterations for thinking is 10. LLM will be called 1 (initial) + 10 (iterations) = 11 times.
+      for (let i = 0; i < 11; i++) { 
+        llmMock.generate.mockResolvedValueOnce(llmRecurringThinkingResponse(i + 1));
+      }
+
+      const opts: AgentOptions = {
+        llm: llmMock,
+        capabilities: [capInfinite],
+      };
+      const agent = new Agent(opts);
+      const onEventMock = vi.fn();
+      agent['onEvent'] = onEventMock;
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      await agent.chat('Start infinite thinking loop');
+
+      expect(llmMock.generate).toHaveBeenCalledTimes(11); 
+      expect(mockRun).toHaveBeenCalledTimes(10); 
+
+      expect(consoleWarnSpy).toHaveBeenCalledWith('Thinking directive reached maximum iterations (10).');
+      expect(onEventMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'agentEnd' }));
+      
+      consoleWarnSpy.mockRestore();
+    });
+
   });
-}); 
+});
+ 
