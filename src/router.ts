@@ -125,6 +125,8 @@ export function createUiInferRouter({
 - Analyze user prompt to extract values corresponding to described properties.
 - Use property descriptions to understand context and extract correct information.
 - Infer most probable props based on descriptions and provided examples.
+- For array properties (especially complex objects): READ the property description carefully - it contains detailed schemas, examples, and rules for each array item.
+- When generating arrays of objects, ensure each object matches the exact structure described in the property definition.
 - Use memory (state.entities) if user omits info already mentioned.
 - If info is unknown, omit it (no invention, no placeholder).
 - Add a natural and conversational message explaining what you did.`,
@@ -140,7 +142,7 @@ export function createUiInferRouter({
       { role: 'system' as const, content: `Memory (state.entities): ${JSON.stringify(memory)}` },
       // Compact history
       ...historyTail.map(turn => ({
-        role: (turn.role === 'developer' ? 'system' : turn.role) as 'system' | 'user' | 'assistant',
+        role: turn.role as 'user' | 'assistant',
         content: turn.content
       })),
       { role: 'user' as const, content: prompt },

@@ -1,4 +1,5 @@
 import { createUiInferRouter } from '../../src/index.js';
+import { defaultBlocks } from './definition.js'
 
 /**
  * Example: Minimal end-to-end usage
@@ -56,189 +57,146 @@ const existingHistory = [
   }
 ];
 
+/**
+ * Helper function to generate block item schema metadata from block definitions
+ * 
+ * @description
+ * Converts block definitions into itemSchema format that can be used
+ * with ComponentProperty.itemSchema to provide detailed schema information
+ * to the LLM for generating complex array structures.
+ * 
+ * @example
+ * ```typescript
+ * const itemSchema = generateBlockItemSchema(defaultBlocks);
+ * const property = {
+ *   name: 'blocks',
+ *   type: 'array',
+ *   description: 'Array of blocks',
+ *   itemSchema: itemSchema
+ * };
+ * ```
+ * 
+ * @param blocks - Array of block definitions from definition.ts
+ * @returns ItemSchema metadata with available types, structure, and examples
+ */
+function generateBlockItemSchema(blocks) {
+  // Convert blocks to availableTypes format
+  const availableTypes = blocks.map(block => ({
+    type: block.type,
+    label: block.label,
+    description: block.description,
+    schema: block.schema || null
+  }));
+
+  // Generate example blocks
+  const examples = [];
+  
+  // Example: show_text block (with schema)
+  examples.push({
+    id: 'block_1',
+    type: 'show_text',
+    data: {
+      text: 'Welcome to the shop!',
+      speaker: 'Merchant',
+      position: 'bottom'
+    },
+    level: 0
+  });
+  
+  // Example: show_choices block (with schema)
+  examples.push({
+    id: 'block_2',
+    type: 'show_choices',
+    data: {
+      question: 'What would you like to do?',
+      choices: [
+        { text: 'Buy items', condition: '' },
+        { text: 'Sell items', condition: '' },
+        { text: 'Leave', condition: '' }
+      ]
+    },
+    level: 0
+  });
+  
+  // Example: set_variable block (with schema)
+  examples.push({
+    id: 'block_3',
+    type: 'set_variable',
+    data: {
+      variableId: 'player_gold',
+      operation: 'add',
+      value: '100'
+    },
+    level: 0
+  });
+  
+  // Example: loop block (with schema)
+  examples.push({
+    id: 'block_4',
+    type: 'loop',
+    data: {
+      type: 'count',
+      count: 3
+    },
+    level: 0
+  });
+  
+  // Example: conditional_branch block (no schema - empty data)
+  examples.push({
+    id: 'block_5',
+    type: 'conditional_branch',
+    data: {},
+    level: 0
+  });
+
+  return {
+    availableTypes,
+    itemStructure: {
+      requiredFields: ['id', 'type', 'data'],
+      optionalFields: ['level']
+    },
+    examples
+  };
+}
+
 const router = createUiInferRouter({
   model: 'gpt-5-nano',
   timezone: 'Europe/Paris',
   componentDefault: 'HelpCard',
  // initialHistory: existingHistory,
   components: [
-     {
-      id: 'MainPage',
-      version: '1.0.0',
-      description: 'Composant pour afficher la page principale/acceuil de l\'application',
-      contexts: [{ currentPath: 'main', methods: ['GET'] }]
-    },
     {
-      id: 'EventListView',
-      version: '1.0.0',
-      description: 'Composant pour afficher une liste d\'événements (filtrables par date, participant, etc.)',
+      id: 'GenerateBlocks',
+      description: `Generate blocks for a specific trigger based on description. Available block types: ${defaultBlocks.map(b => `${b.type} (${b.label})`).join(', ')}. Each block must match its schema definition exactly from @common/blocks/definitions.ts.`,
       properties: [
         {
-          name: 'filter',
-          type: 'object',
-          description: 'Filtres pour la liste d\'événements',
-          required: false,
+          name: 'description',
+          type: 'string',
+          description: 'Description of what should happen in this trigger',
+          required: true,
           examples: [
-            { date: '2025-01-27' },
-            { today: true },
-            { attendee: 'john@example.com' }
+            'Show a welcome message and set up the merchant inventory',
+            'Display dialogue and show choices to buy items',
+            'Open the chest and give the player an item'
           ]
-        }
-      ],
-      contexts: [{ currentPath: 'event', methods: ['GET'] }]
-    },
-    {
-      id: 'EventDetailView',
-      version: '1.0.0',
-      description: 'Composant pour afficher les détails d\'un événement spécifique (nécessite un eventId)',
-      properties: [
-        {
-          name: 'eventId',
-          type: 'string',
-          description: 'Identifiant unique de l\'événement à afficher',
-          required: true,
-          examples: ['46792', 'event-123', 'meeting-456']
         },
         {
-          name: 'title',
-          type: 'string',
-          description: 'Titre de l\'événement',
-          required: true,
-          examples: ['Réunion équipe', 'Déjeuner client', 'Formation technique']
-        },
-        {
-          name: 'start',
-          type: 'string',
-          description: 'Date et heure de début au format ISO 8601',
-          required: true,
-          examples: ['2025-10-30T15:00:00+01:00', '2025-11-01T09:30:00+01:00']
-        },
-        {
-          name: 'attendees',
+          name: 'blocks',
           type: 'array',
-          description: 'Liste des participants (emails)',
-          required: false,
-          examples: [['john@example.com', 'jane@example.com'], ['paul@company.com']]
+          description: `Array of block instances to be created. You MUST use only block types from: ${defaultBlocks.map(b => b.type).join(', ')}.`,
+          required: true,
+          itemSchema: generateBlockItemSchema(defaultBlocks)
         }
       ],
-      contexts: [{ currentPath: 'event', methods: ['GET'] }]
-    },
-    {
-      id: 'EventEditor',
-      version: '1.1.0',
-      description: 'Composant pour modifier un événement existant',
-      properties: [
-        {
-          name: 'eventId',
-          type: 'string',
-          description: 'Identifiant unique de l\'événement à modifier',
-          required: true,
-          examples: ['46792', 'event-123']
-        },
-        {
-          name: 'title',
-          type: 'string',
-          description: 'Nouveau titre de l\'événement',
-          required: false,
-          examples: ['Réunion équipe mise à jour', 'Déjeuner client reporté']
-        },
-        {
-          name: 'start',
-          type: 'string',
-          description: 'Nouvelle date et heure de début au format ISO 8601',
-          required: false,
-          examples: ['2025-10-31T15:00:00+01:00', '2025-11-02T14:30:00+01:00']
-        },
-        {
-          name: 'durationMinutes',
-          type: 'number',
-          description: 'Durée de l\'événement en minutes',
-          required: false,
-          examples: [60, 90, 120, 30]
-        },
-        {
-          name: 'attendees',
-          type: 'array',
-          description: 'Liste mise à jour des participants (emails)',
-          required: false,
-          examples: [['john@example.com', 'jane@example.com', 'sophie@example.com']]
-        },
-        {
-          name: 'message',
-          type: 'string',
-          description: 'Message naturel du chatbot expliquant ce qu\'il a fait',
-          required: false,
-          examples: ['J\'ai modifié l\'événement pour toi', 'Parfait, j\'ai créé la réunion', 'J\'ai ajouté Sophie à la liste des participants']
-        }
+      contexts: [
+        { currentPath: 'blocks/generate', methods: ['POST'] }
       ],
-      contexts: [{ currentPath: 'event', methods: ['PUT','PATCH'] }]
-    },
-    {
-      id: 'EventCreateForm',
-      version: '1.2.0',
-      description: 'Composant pour créer un nouvel événement',
-      properties: [
-        {
-          name: 'title',
-          type: 'string',
-          description: 'Titre du nouvel événement',
-          required: true,
-          examples: ['Nouvelle réunion', 'Déjeuner d\'équipe', 'Formation React']
-        },
-        {
-          name: 'start',
-          type: 'string',
-          description: 'Date et heure de début au format ISO 8601',
-          required: true,
-          examples: ['2025-11-05T10:00:00+01:00', '2025-11-10T14:00:00+01:00']
-        },
-        {
-          name: 'durationMinutes',
-          type: 'number',
-          description: 'Durée de l\'événement en minutes',
-          required: false,
-          examples: [60, 90, 120, 30]
-        },
-        {
-          name: 'attendees',
-          type: 'array',
-          description: 'Liste des participants (emails)',
-          required: false,
-          examples: [['john@example.com', 'jane@example.com'], ['paul@company.com', 'marie@company.com']]
-        },
-        {
-          name: 'message',
-          type: 'string',
-          description: 'Message naturel du chatbot expliquant ce qu\'il a fait',
-          required: false,
-          examples: ['Super ! J\'ai créé ton nouvel événement', 'C\'est fait, la réunion est programmée', 'Parfait, j\'ai ajouté la formation React à ton calendrier']
-        }
-      ],
-      contexts: [{ currentPath: 'event', methods: ['POST'] }]
-    },
-    { 
-      id: 'HelpCard', 
-      version: '1.0.0',
-      description: 'Composant d\'aide quand l\'intention n\'est pas claire',
-      // When selected, switch away from event routes
-      defaultPath: 'smalltalk',
-      defaultMethod: 'GET',
-      properties: [
-        {
-          name: 'message',
-          type: 'string',
-          description: 'Juste répondre à la question de l\'utilisateur',
-          required: true
-        }
-      ]
+      defaultPath: 'blocks/generate',
+      defaultMethod: 'POST'
     }
   ]
 });
 
-let out1 = await router.route({ prompt: 'Quel est la page principale ?' });
+let out1 = await router.route({ prompt: 'générer des blocks: un perso dit bonjour' });
 
-console.log(out1);
-
-let out2 = await router.route({ prompt: 'Donne moi les événements du jour' });
-
-console.log(out2);
+console.log(JSON.stringify(out1, null, 2));

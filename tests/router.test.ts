@@ -304,6 +304,85 @@ describe('createUiInferRouter', () => {
       expect(messagesStr).toContain('EventDetailView');
       expect(messagesStr).toContain('event/123');
     });
+
+    it('should include detailed schema description for array properties with itemSchema', async () => {
+      const mockResponse: RouterResponse = {
+        componentId: 'GenerateBlocks',
+        props: {
+          blocks: [
+            { id: 'block_1', type: 'show_text', data: { text: 'Hello' } }
+          ]
+        }
+      };
+
+      mockCreate.mockResolvedValue({
+        choices: [{
+          message: {
+            content: JSON.stringify(mockResponse)
+          }
+        }]
+      });
+
+      const components: Component[] = [
+        {
+          id: 'GenerateBlocks',
+          description: 'Generate blocks',
+          properties: [
+            {
+              name: 'blocks',
+              type: 'array',
+              description: 'Array of blocks',
+              itemSchema: {
+                itemStructure: {
+                  requiredFields: ['id', 'type', 'data'],
+                  optionalFields: ['level']
+                },
+                availableTypes: [
+                  {
+                    type: 'show_text',
+                    label: 'Show Text',
+                    description: 'Display a message',
+                    schema: {
+                      properties: {
+                        text: { type: 'string', title: 'Message Text' },
+                        position: { 
+                          type: 'string', 
+                          enum: ['top', 'bottom'],
+                          default: 'bottom'
+                        }
+                      },
+                      required: ['text']
+                    }
+                  }
+                ],
+                examples: [
+                  { id: 'block_1', type: 'show_text', data: { text: 'Hello' }, level: 0 }
+                ]
+              }
+            }
+          ]
+        }
+      ];
+
+      const router = createUiInferRouter({
+        components,
+        apiKey: 'test-key'
+      });
+
+      await router.route({ prompt: 'generate blocks with text hello' });
+
+      const callArgs = mockCreate.mock.calls[0][0];
+      const messagesStr = JSON.stringify(callArgs.messages);
+      
+      // Check that detailed schema description is included
+      expect(messagesStr).toContain('GenerateBlocks');
+      expect(messagesStr).toContain('blocks');
+      expect(messagesStr).toContain('AVAILABLE ITEM TYPES');
+      expect(messagesStr).toContain('show_text');
+      expect(messagesStr).toContain('Show Text');
+      expect(messagesStr).toContain('Message Text');
+      expect(messagesStr).toContain('CRITICAL RULES');
+    });
   });
 
   describe('state management methods', () => {

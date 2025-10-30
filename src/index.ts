@@ -3,7 +3,9 @@
  */
 
 export { createUiInferRouter } from './router.js';
+export { generateArrayItemDescription } from './utils.js';
 export type {
+  ArrayItemSchema,
   Component,
   ComponentProperty,
   ConversationTurn,

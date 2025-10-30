@@ -457,6 +457,116 @@ const components = [
 ];
 ```
 
+### Complex Array Properties with Schemas
+
+For array properties with complex object structures, use `itemSchema` to provide detailed schema information to the LLM:
+
+```typescript
+import { generateArrayItemDescription } from 'morph-agent';
+import type { ArrayItemSchema } from 'morph-agent';
+
+// Define your item schema metadata
+const blockItemSchema: ArrayItemSchema = {
+  availableTypes: [
+    {
+      type: 'show_text',
+      label: 'Show Text',
+      description: 'Display a message dialog',
+      schema: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', title: 'Message Text' },
+          speaker: { type: 'string', title: 'Speaker Name' },
+          position: { 
+            type: 'string', 
+            enum: ['top', 'middle', 'bottom'],
+            default: 'bottom'
+          }
+        },
+        required: ['text']
+      }
+    },
+    {
+      type: 'set_variable',
+      label: 'Set Variable',
+      description: 'Set a game variable',
+      schema: {
+        type: 'object',
+        properties: {
+          variableId: { type: 'string', title: 'Variable ID' },
+          operation: { 
+            type: 'string', 
+            enum: ['set', 'add', 'subtract'],
+            default: 'set'
+          },
+          value: { type: 'string', title: 'Value' }
+        },
+        required: ['variableId', 'value']
+      }
+    }
+  ],
+  itemStructure: {
+    requiredFields: ['id', 'type', 'data'],
+    optionalFields: ['level']
+  },
+  examples: [
+    {
+      id: 'block_1',
+      type: 'show_text',
+      data: { text: 'Welcome!', position: 'bottom' },
+      level: 0
+    },
+    {
+      id: 'block_2',
+      type: 'set_variable',
+      data: { variableId: 'gold', operation: 'add', value: '100' },
+      level: 0
+    }
+  ]
+};
+
+// Use in component definition
+const components = [
+  {
+    id: 'GenerateBlocks',
+    description: 'Generate blocks based on description',
+    properties: [
+      {
+        name: 'blocks',
+        type: 'array',
+        description: 'Array of block instances',
+        required: true,
+        itemSchema: blockItemSchema
+      }
+    ]
+  }
+];
+```
+
+The router automatically generates a detailed description from `itemSchema` that includes:
+- Item structure requirements (required/optional fields)
+- Available types with their schemas
+- Examples
+- Critical rules for generating valid items
+
+**Helper Function:**
+
+You can also use `generateArrayItemDescription` directly to create descriptions:
+
+```typescript
+import { generateArrayItemDescription } from 'morph-agent';
+
+const property = {
+  name: 'blocks',
+  type: 'array',
+  description: 'Array of blocks',
+  itemSchema: blockItemSchema
+};
+
+const detailedDescription = generateArrayItemDescription(property);
+// Returns comprehensive description with schemas, examples, and rules
+```
+
 ## How It Works
 
 1. **User sends prompt** → `router.route({ prompt: '...' })`
@@ -508,6 +618,7 @@ Full TypeScript definitions are included:
 
 ```typescript
 import type {
+  ArrayItemSchema,
   Component,
   ComponentProperty,
   ConversationTurn,
@@ -515,6 +626,7 @@ import type {
   UiInferRouter,
   UiInferRouterConfig
 } from 'morph-agent';
+import { generateArrayItemDescription } from 'morph-agent';
 ```
 
 ## Contributing

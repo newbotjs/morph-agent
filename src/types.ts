@@ -3,6 +3,36 @@
  */
 
 /**
+ * Schema metadata for array items (used when type is 'array')
+ */
+export interface ArrayItemSchema {
+  /**
+   * Available types/options for items in the array
+   */
+  availableTypes?: Array<{
+    type: string;
+    label?: string;
+    description?: string;
+    schema?: {
+      type?: string;
+      properties?: Record<string, any>;
+      required?: string[];
+    };
+  }>;
+  /**
+   * Common structure that all items must follow
+   */
+  itemStructure?: {
+    requiredFields: string[];
+    optionalFields?: string[];
+  };
+  /**
+   * Example items
+   */
+  examples?: any[];
+}
+
+/**
  * Property definition for a component
  */
 export interface ComponentProperty {
@@ -11,6 +41,11 @@ export interface ComponentProperty {
   description: string;
   required?: boolean;
   examples?: string[];
+  /**
+   * Schema metadata for array items (used when type is 'array')
+   * This allows passing detailed schema information for complex array properties
+   */
+  itemSchema?: ArrayItemSchema;
 }
 
 /**

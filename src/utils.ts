@@ -2,7 +2,7 @@
  * @fileoverview Utility functions for the UI inference router
  */
 
-import type { Component, HeadersDelta, PathHint, RouterState } from './types.js';
+import type { Component, ComponentProperty, HeadersDelta, PathHint, RouterState } from './types.js';
 
 /**
  * Computes the delta between two header states
@@ -69,11 +69,116 @@ export function hintFromPath(headers: { currentPath?: string | null }): PathHint
 }
 
 /**
+ * Generates detailed description for array properties with complex schemas
+ * 
+ * @description
+ * Builds a comprehensive description string for array properties that includes
+ * item structure, available types, schemas, and examples. This helper is used
+ * when a property has itemSchema metadata to provide detailed instructions to the LLM.
+ * 
+ * @example
+ * ```typescript
+ * const prop = {
+ *   name: 'blocks',
+ *   type: 'array',
+ *   description: 'Array of blocks',
+ *   itemSchema: {
+ *     availableTypes: [
+ *       { type: 'show_text', schema: { properties: { text: { type: 'string' } } } }
+ *     ],
+ *     itemStructure: { requiredFields: ['id', 'type'], optionalFields: ['level'] }
+ *   }
+ * };
+ * const description = generateArrayItemDescription(prop);
+ * // Returns detailed description with schemas and examples
+ * ```
+ * 
+ * @param property - Component property with itemSchema metadata
+ * @returns Detailed description string for the array property
+ */
+export function generateArrayItemDescription(property: ComponentProperty): string {
+  if (!property.itemSchema) {
+    return property.description;
+  }
+
+  const { itemSchema } = property;
+  const parts: string[] = [property.description];
+
+  // Add item structure requirements
+  if (itemSchema.itemStructure) {
+    parts.push('\n\nEach item MUST have this exact structure:');
+    if (itemSchema.itemStructure.requiredFields.length > 0) {
+      parts.push(`- Required fields: ${itemSchema.itemStructure.requiredFields.map(f => `"${f}"`).join(', ')}`);
+    }
+    if (itemSchema.itemStructure.optionalFields && itemSchema.itemStructure.optionalFields.length > 0) {
+      parts.push(`- Optional fields: ${itemSchema.itemStructure.optionalFields.map(f => `"${f}"`).join(', ')}`);
+    }
+  }
+
+  // Add available types with their schemas
+  if (itemSchema.availableTypes && itemSchema.availableTypes.length > 0) {
+    parts.push('\n\nAVAILABLE ITEM TYPES (each item must match one of these schemas exactly):\n');
+    
+    itemSchema.availableTypes.forEach((itemType, index) => {
+      const typeParts: string[] = [];
+      typeParts.push(`${index + 1}. ${itemType.type}${itemType.label ? ` (${itemType.label})` : ''}`);
+      
+      if (itemType.description) {
+        typeParts.push(`   Description: ${itemType.description}`);
+      }
+      
+      if (itemType.schema) {
+        if (itemType.schema.properties) {
+          typeParts.push('   Properties:');
+          Object.entries(itemType.schema.properties).forEach(([key, val]: [string, any]) => {
+            const typeInfo = val.type || 'any';
+            const required = itemType.schema.required?.includes(key) ? ' (required)' : '';
+            const defaultVal = val.default !== undefined ? ` (default: ${JSON.stringify(val.default)})` : '';
+            const enumVals = val.enum ? ` (values: ${val.enum.join(', ')})` : '';
+            const title = val.title || val.description || 'no description';
+            typeParts.push(`     - ${key} (${typeInfo})${required}${defaultVal}${enumVals}: ${title}`);
+          });
+        }
+        
+        if (!itemType.schema.properties || Object.keys(itemType.schema.properties).length === 0) {
+          typeParts.push('   Note: This type has no schema defined. Use an empty object {} for data properties.');
+        }
+      } else {
+        typeParts.push('   Note: This type has no schema defined. Use an empty object {} for data properties.');
+      }
+      
+      parts.push(typeParts.join('\n'));
+    });
+  }
+
+  // Add examples
+  if (itemSchema.examples && itemSchema.examples.length > 0) {
+    parts.push('\n\nExample items structure:');
+    parts.push(JSON.stringify(itemSchema.examples, null, 2));
+  }
+
+  // Add critical rules
+  parts.push('\n\nCRITICAL RULES:');
+  parts.push('1. Each item\'s structure must match the exact schema defined for its type');
+  if (itemSchema.itemStructure?.requiredFields.length) {
+    parts.push(`2. Required fields (${itemSchema.itemStructure.requiredFields.join(', ')}) MUST be present`);
+  }
+  parts.push('3. Optional fields can be omitted');
+  parts.push('4. If a property has a default value, you can omit it to use the default');
+  parts.push('5. If a property has enum values, use ONLY one of those enum values');
+  parts.push('6. Generate items in logical order according to the description');
+
+  return parts.join('\n');
+}
+
+/**
  * Compacts component definitions for LLM input to reduce token usage
  * 
  * @description
  * Reduces component definitions to only essential information needed
- * for LLM inference, excluding unnecessary metadata.
+ * for LLM inference, excluding unnecessary metadata. If a property has
+ * itemSchema metadata, it uses generateArrayItemDescription to build
+ * a detailed description.
  * 
  * @example
  * ```typescript
@@ -101,7 +206,7 @@ export function compactComponentsForLLM(list: Component[]): Array<Partial<Compon
     properties: c.properties ? c.properties.map(p => ({
       name: p.name,
       type: p.type,
-      description: p.description,
+      description: p.itemSchema ? generateArrayItemDescription(p) : p.description,
       required: p.required,
       examples: p.examples
     })) : undefined,
